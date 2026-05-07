@@ -1,0 +1,13 @@
+# Core
+torch>=2.2.0
+transformers>=4.40.0
+datasets>=2.19.0
+pyyaml>=6.0
+
+# Training utilities
+accelerate>=0.30.0
+tqdm>=4.66.0
+
+# Logging / experiment tracking (optional — uncomment as needed)
+# wandb
+# tensorboard

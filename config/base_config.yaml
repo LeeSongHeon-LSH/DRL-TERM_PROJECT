@@ -1,0 +1,44 @@
+project:
+  name: "DRL-TERM_PROJECT"
+  seed: 42
+  output_dir: "outputs/"
+
+model:
+  policy:
+    name: null          # TBD: e.g. "meta-llama/Llama-3-8B"
+    max_length: 512
+    dtype: "bfloat16"
+  judge:
+    name: null          # TBD: e.g. "gpt-4o"
+    max_length: 512
+
+data:
+  train_path: null      # TBD
+  eval_path: null       # TBD
+  batch_size: 8
+
+reward:
+  type: "llm_judge"     # 확률 분포 기반 reward
+  # reward 계산 세부 설정은 TBD
+
+trainer:
+  algorithm: "ppo"      # TBD: ppo or other
+  learning_rate: 1.0e-5
+  num_epochs: 1
+  max_steps: null
+  # PPO-specific
+  ppo:
+    clip_epsilon: 0.2
+    vf_coef: 0.1
+    kl_coef: 0.1
+    rollout_batch_size: 8
+    ppo_epochs: 4
+    grad_clip: 1.0
+
+eval:
+  benchmark: null       # TBD
+  eval_steps: 500
+
+logging:
+  log_steps: 10
+  save_steps: 500
