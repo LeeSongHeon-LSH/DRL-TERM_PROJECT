@@ -1,0 +1,130 @@
+# 4개 service + profiles로 분산 배포 / 단일 호스트 테스트 둘 다 지원.
+#
+# === 사용 ===
+# 한 번 빌드:
+#   docker compose build
+#
+# 분산 시 (각 PC에서 자기 profile만):
+#   브로커 PC:    docker compose --profile broker  up -d
+#   PRM 워커 PC:  docker compose --profile prm     up -d
+#   μ  워커 PC:  docker compose --profile mu      up -d
+#   본체:         docker compose --profile trainer up -d
+#
+# 단일 호스트 모든 것 한꺼번에:
+#   docker compose --profile all up -d
+#
+# === 환경 ===
+# .env (또는 export) 로 다음을 정의 권장:
+#   AMQP_URL=amqp://guest:guest@<broker-host>:5672/
+#   HF_HOME_HOST=/path/on/host/.hf_cache    # 호스트의 HF 캐시 경로 (모델 영속화)
+#   HF_TOKEN=...                             # public이라 선택, rate limit 회피용
+#   WANDB_API_KEY=...                        # trainer 전용
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+
+x-common-env: &common-env
+  AMQP_URL: ${AMQP_URL:-amqp://guest:guest@rabbitmq:5672/}
+  HF_HOME: /cache/huggingface
+  HF_TOKEN: ${HF_TOKEN:-}
+  # hf_transfer 미설치 시 Dockerfile의 HF_HUB_ENABLE_HF_TRANSFER=1을 override
+  HF_HUB_ENABLE_HF_TRANSFER: "0"
+
+x-volumes: &common-volumes
+  - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
+  # 코드 hot-reload — 이미지 재빌드 없이 src/scripts 수정 즉시 반영 (개발/디버깅 용)
+  - ./src:/app/src:ro
+  - ./scripts:/app/scripts:ro
+  - ./configs:/app/configs:ro
+
+services:
+  # ---------------------------- ① RabbitMQ broker ----------------------------
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: pav-rabbitmq
+    restart: unless-stopped
+    profiles: ["broker", "all"]
+    ports:
+      - "5672:5672"      # AMQP
+      - "15672:15672"    # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbit_data:/var/lib/rabbitmq
+
+  # ---------------------------- ② PRM 워커 (RTX 5070급) ----------------------------
+  prm-worker:
+    build: .
+    image: pav-rl:latest
+    container_name: pav-prm-worker
+    restart: unless-stopped
+    profiles: ["prm", "all"]
+    <<: *gpu
+    environment:
+      <<: *common-env
+    volumes: *common-volumes
+    command: >
+      python scripts/serve_prm.py
+      --config configs/prm.yaml
+      --amqp-url ${AMQP_URL:-amqp://guest:guest@rabbitmq:5672/}
+      --queue prm.requests
+      --prefetch 1
+    # 단일 호스트 테스트 시 broker 대기
+    depends_on:
+      - rabbitmq
+
+  # ---------------------------- ③ μ 워커 (16GB+ GPU) ----------------------------
+  mu-worker:
+    build: .
+    image: pav-rl:latest
+    container_name: pav-mu-worker
+    restart: unless-stopped
+    profiles: ["mu", "all"]
+    <<: *gpu
+    environment:
+      <<: *common-env
+    volumes: *common-volumes
+    command: >
+      python scripts/serve_mu.py
+      --config configs/policy.yaml
+      --amqp-url ${AMQP_URL:-amqp://guest:guest@rabbitmq:5672/}
+      --queue mu.requests
+      --prefetch 1
+    depends_on:
+      - rabbitmq
+
+  # ---------------------------- ④ 학습 본체 (3090) ----------------------------
+  trainer:
+    build: .
+    image: pav-rl:latest
+    container_name: pav-trainer
+    profiles: ["trainer", "all"]
+    <<: *gpu
+    environment:
+      <<: *common-env
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+    volumes:
+      - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
+      - ./outputs:/app/outputs
+      - ./configs:/app/configs:ro       # config 핫스왑 가능
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+    command: >
+      python scripts/03_grpo_train.py
+      --rl-config configs/rl_q3.yaml
+      --prm-config configs/prm.yaml
+      --policy-config configs/policy.yaml
+    depends_on:
+      - rabbitmq
+    # IPC: vLLM 내부 multiprocessing 위한 shared memory 충분히 (default 64M는 부족)
+    shm_size: "8g"
+
+volumes:
+  rabbit_data:

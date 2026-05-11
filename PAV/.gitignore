@@ -1,0 +1,40 @@
+# uv / 가상환경
+.venv/
+# .python-version, uv.lock는 commit — 재현성 보존
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# 학습 산출물
+outputs/
+checkpoints/
+wandb/
+*.bin
+*.safetensors
+.hf_cache/
+
+# Docker
+.env
+.envrc
+*.local
+
+# 인증서 / 비밀
+*.key
+*.pem
+*.crt
+*.p12
+credentials*.json
+secrets*.json
+
+# 에디터
+.vscode/
+.idea/
+.claude/

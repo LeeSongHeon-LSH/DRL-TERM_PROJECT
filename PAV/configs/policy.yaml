@@ -1,0 +1,41 @@
+# 정책 π = Qwen2.5-Math-7B-Instruct + LoRA (학습 대상)
+# Prover μ = 동일 모델의 frozen base — μ ≠ π 보장
+name: qwen25-math-1_5b-instruct
+model_id: Qwen/Qwen2.5-Math-1.5B-Instruct
+dtype: bfloat16
+device: cuda
+
+# LoRA — "LoRA Without Regret" 권고치
+lora:
+  r: 64
+  alpha: 128                # = 2r
+  dropout: 0.05
+  target_modules: all-linear   # q/k/v/o + gate/up/down
+
+# 정책 generation (rollout 시)
+generation:
+  max_new_tokens: 512
+  temperature: 0.8
+  top_p: 0.95
+  stop:
+    - "\n\n\n"
+
+# Prover μ — base model, frozen, MC rollout에서 single-step sampling용
+# mode: "local"  → 본체 GPU에 vLLM 인스턴스 (gpu_memory_utilization 비율만큼 점유)
+# mode: "remote" → 워커들이 amqp_url의 request_queue를 consume (RemoteMuSampler)
+mu:
+  model_id: Qwen/Qwen2.5-Math-7B-Instruct   # frozen base (LoRA 미적용)
+  temperature: 1.0
+  top_p: 0.95
+  max_new_tokens: 256       # single step만 — step boundary에서 stop
+  step_stop:
+    - "\n\n"
+  # μ 단독 (Stage 5/6) 또는 trainer는 다른 GPU일 때: 0.75 권장
+  # PRM과 동거 (Stage 7) 또는 trainer와 동거 시: 0.50으로 낮춤
+  gpu_memory_utilization: 0.75
+  max_model_len: 4096            # KV cache 메모리 제한 (default 32k는 24GB 카드에서 OOM)
+  dtype: bfloat16
+  mode: local
+  amqp_url: amqp://guest:guest@localhost:5672/
+  request_queue: mu.requests
+  rpc_timeout: 180

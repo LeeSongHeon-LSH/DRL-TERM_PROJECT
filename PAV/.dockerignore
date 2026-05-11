@@ -1,0 +1,38 @@
+# venv / 캐시
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+
+# 개발 산출물
+outputs/
+checkpoints/
+wandb/
+*.bin
+*.safetensors
+hf_cache/
+data/
+
+# 에디터
+.vscode/
+.idea/
+
+# 문서/계획서 (이미지에 굽지 않음)
+*.md
+!README.md
+
+# git
+.git/
+.gitignore
+
+# CI / 컨테이너 부산물
+.dockerignore
+docker-compose.yml
+Dockerfile
+.env
+.env.example
+
+# 테스트 (학습/서빙엔 불필요)
+tests/

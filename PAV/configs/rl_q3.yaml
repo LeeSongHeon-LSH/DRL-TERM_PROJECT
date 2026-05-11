@@ -1,0 +1,61 @@
+# 메인 RL 조건 — Q3 (risk-seeking, mean − λ·std, λ=−0.5)
+# Phase 1 MCRolloutPAV(K=16) + GRPO + LoRA
+algorithm: grpo
+
+defaults:
+  prm: prm.yaml
+  policy: policy.yaml
+
+# PAV 추출 — DifferentialPAV ↔ MCRolloutPAV swap은 method 키만 변경
+pav:
+  method: differential      # Stage 8 단일 호스트 smoke: μ 안 씀 (Phase 0)
+  K: 16                     # MC rollout 수 (mc_rollout 전용)
+
+# Reward 가공
+reward:
+  alpha: 3.0                # PAV 가중치 (ablation: 1.5 ~ 5.5)
+  mode: Q3                  # B1 | Q1 | Q3 | Q4
+  lam: -0.5                 # Q3 risk-seeking
+  cvar_alpha: 0.2           # Q4 CVaR tail
+
+# GRPO
+grpo:
+  group_size: 8             # 같은 문제에서 8 rollout
+  kl_beta: 0.04             # anti-hacking
+  clip_eps: 0.2
+  learning_rate: 5.0e-6     # FullFT의 ~10×
+  total_steps: 50              # Stage 8 smoke: 50 step에서 LoRA weight 변화 확인 (실제 학습은 5000+)
+  warmup_steps: 5
+  gradient_accumulation: 1
+
+# 데이터
+# 학습 = GSM8K (단일), 검증/최종평가 = MathNet (Olympiad-level, English text-only)
+data:
+  train:
+    - dataset: gsm8k
+      split: train
+  eval:
+    - dataset: mathnet
+      split: train          # MathNet은 train split만 존재 (test/val 없음)
+      filters:
+        language: English
+        text_only: true       # images 가 없는 문제만
+        require_final_answer: true   # final_answer not null
+      subset: 200             # 처음 200문제만 (필터 후)
+
+# vLLM rollout (학습 정책 π의 colocate rollout)
+# 3090 24GB 단일 환경 + PRM/μ remote 가정 시 0.30 권장 (학습 forward + LoRA optim 여유 확보)
+# H100 80GB ×2 환경이면 0.55 그대로
+vllm:
+  enable_prefix_caching: true
+  colocate: true
+  gpu_memory_utilization: 0.30
+  max_new_tokens: 512
+
+# 로깅
+logging:
+  wandb_project:               # 빈 값 → wandb 비활성, stdout만
+  wandb_run_name: stage8_smoke
+  log_every: 5
+  eval_every: 500
+  dump_samples_every: 1000   # trivial-step 함정 모니터링
