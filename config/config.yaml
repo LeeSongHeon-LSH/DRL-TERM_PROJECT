@@ -1,0 +1,53 @@
+model:
+  name: "Qwen/Qwen2.5-7B-Instruct"
+  dtype: "bfloat16"
+  quantization:
+    load_in_4bit: true
+    bnb_4bit_compute_dtype: "bfloat16"
+    bnb_4bit_quant_type: "nf4"
+    bnb_4bit_use_double_quant: true
+  lora:
+    r: 16
+    lora_alpha: 32
+    lora_dropout: 0.05
+    target_modules:
+      - q_proj
+      - k_proj
+      - v_proj
+      - o_proj
+      - gate_proj
+      - up_proj
+      - down_proj
+
+# vLLM is used for rollout generation during GRPO training.
+# With 4-bit quantization: vLLM ~4GB + HF policy ~4GB + HF ref ~4GB ≈ ~15GB total.
+# RTX 3090/4090 (24GB) sufficient; A100 40GB comfortable.
+vllm:
+  gpu_memory_utilization: 0.30
+  quantization: "bitsandbytes"
+  max_model_len: 2048
+  tensor_parallel_size: 1
+
+grpo:
+  num_generations: 8       # G responses sampled per prompt
+  max_new_tokens: 512
+  temperature: 0.7
+  learning_rate: 5.0e-6
+  batch_size: 4            # prompts per training step
+  total_steps: 1000
+  clip_epsilon: 0.2
+  kl_coef: 0.01
+  grad_clip: 1.0
+  weight_sync_steps: 20    # sync vLLM weights every N optimizer steps
+
+eval:
+  # MathNet = MATH benchmark (Hendrycks et al., 2021)
+  # Dataset: hendrycks/competition_math (HuggingFace)
+  num_samples: 500         # use 0 for full test set
+  max_new_tokens: 1024
+  temperature: 0.0         # greedy decoding for eval
+
+logging:
+  log_steps: 10
+  save_steps: 200
+  output_dir: "outputs/"

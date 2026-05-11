@@ -1,51 +1,54 @@
-"""
-Entry point for RL training.
-Usage: python scripts/train.py --config config/base_config.yaml
-"""
-import argparse
+import logging
+import os
+import sys
+
 import yaml
 
-from models.policy import PolicyModel
-from models.reward_model import RewardModel
-from reward.llm_judge import LLMJudgeReward
-from trainer.ppo_trainer import PPOTrainer
-from data.dataset import BaseDataset
-from utils.logging import get_logger
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-logger = get_logger(__name__)
+from data.gsm8k import GSM8KDataset, make_dataloader
+from trainer.grpo_trainer import GRPOTrainer
 
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="config/base_config.yaml")
-    return parser.parse_args()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 def main():
-    args = parse_args()
-    with open(args.config) as f:
-        config = yaml.safe_load(f)
+    with open("config/config.yaml") as f:
+        cfg = yaml.safe_load(f)
 
-    logger.info("Loading policy model...")
-    policy = PolicyModel()
-    policy.load(config["model"]["policy"]["name"])
+    trainer = GRPOTrainer(cfg)
+    dataset = GSM8KDataset(trainer.tokenizer, split="train")
+    loader = make_dataloader(dataset, cfg["grpo"]["batch_size"])
 
-    logger.info("Loading judge (reward) model...")
-    judge = RewardModel()
-    judge.load(config["model"]["judge"]["name"])
+    log_every = cfg["logging"]["log_steps"]
+    save_every = cfg["logging"]["save_steps"]
+    total_steps = cfg["grpo"]["total_steps"]
+    output_dir = cfg["logging"]["output_dir"]
 
-    reward_fn = LLMJudgeReward(judge=judge)
-    # TODO: set reward_fn.positive_token_ids once judge model and task are confirmed
+    logger.info(f"GSM8K train size: {len(dataset)} | total steps: {total_steps}")
 
-    # TODO: load dataset via BaseDataset subclass
-    # dataset = ConcreteDataset.from_config(config["data"])
-    # dataloader = DataLoader(dataset, batch_size=config["data"]["batch_size"])
+    while trainer.step < total_steps:
+        for batch in loader:
+            if trainer.step >= total_steps:
+                break
+            metrics = trainer.train_step(
+                list(batch["prompt"]), list(batch["reference"])
+            )
+            if trainer.step % log_every == 0:
+                logger.info(
+                    f"step {trainer.step}/{total_steps} | "
+                    f"loss={metrics['loss']:.4f} | "
+                    f"reward={metrics['mean_reward']:.4f}"
+                )
+            if trainer.step % save_every == 0:
+                trainer.save(os.path.join(output_dir, f"checkpoint-{trainer.step}"))
 
-    trainer = PPOTrainer(policy=policy, reward_fn=reward_fn, config=config)
-    trainer._init_optimizer()
-
-    logger.info("Starting training...")
-    # trainer.train(dataloader)
+    trainer.save(os.path.join(output_dir, "final"))
+    logger.info("Training complete.")
 
 
 if __name__ == "__main__":

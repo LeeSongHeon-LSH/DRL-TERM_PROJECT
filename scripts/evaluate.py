@@ -1,44 +1,29 @@
-"""
-Entry point for benchmark evaluation.
-Usage: python scripts/evaluate.py --config config/base_config.yaml --checkpoint outputs/step_500
-"""
-import argparse
+import logging
+import os
+import sys
+
 import yaml
 
-from models.policy import PolicyModel
-from eval.evaluator import Evaluator
-from utils.logging import get_logger
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-logger = get_logger(__name__)
+from eval.math_eval import evaluate
 
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="config/base_config.yaml")
-    parser.add_argument("--checkpoint", type=str, default=None)
-    return parser.parse_args()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
 
 
 def main():
-    args = parse_args()
-    with open(args.config) as f:
-        config = yaml.safe_load(f)
+    model_path = sys.argv[1] if len(sys.argv) > 1 else "outputs/final"
+    with open("config/config.yaml") as f:
+        cfg = yaml.safe_load(f)
 
-    policy = PolicyModel()
-    policy.load(config["model"]["policy"]["name"])
-
-    if args.checkpoint:
-        logger.info(f"Loading checkpoint: {args.checkpoint}")
-        # TODO: policy.load_checkpoint(args.checkpoint)
-
-    # TODO: instantiate concrete benchmark once confirmed
-    # benchmark = ConcreteBenchmark()
-    # benchmark.load()
-    # dataset = ConcreteDataset.from_config(config["data"])
-
-    # evaluator = Evaluator(policy=policy, benchmark=benchmark)
-    # metrics = evaluator.run(dataset, batch_size=config["data"]["batch_size"])
-    # evaluator.log_metrics(metrics, step=0)
+    results = evaluate(model_path, cfg)
+    print(f"\nOverall accuracy: {results['overall_accuracy']:.4f}")
+    print("By level:")
+    for lvl, acc in sorted(results["by_level"].items()):
+        print(f"  {lvl}: {acc:.4f}")
 
 
 if __name__ == "__main__":
