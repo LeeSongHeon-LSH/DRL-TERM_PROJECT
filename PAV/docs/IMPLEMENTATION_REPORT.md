@@ -30,8 +30,12 @@ PAV/
 ├── pyproject.toml                 # uv canonical (torch 2.5.1+cu124 + extras)
 ├── .python-version                # 3.11
 ├── README.md
-├── IMPLEMENTATION_REPORT.md       # ← 본 문서
-├── 구현 계획 — 차분 PAV + 분포형 보상 (Phase 0).md
+├── docs/                          # 보고서/계획서/다이어그램 모음
+│   ├── IMPLEMENTATION_REPORT.md   # ← 본 문서
+│   ├── STAGE_TEST_REPORT.md       # Docker 단계별 실행 결과
+│   ├── DOCKER_STAGE_TESTS.md      # Docker 단계별 테스트 계획
+│   ├── TRAINING_FLOW.md           # 학습 흐름 다이어그램
+│   └── 구현 계획 — 차분 PAV + 분포형 보상 (Phase 0).md
 ├── configs/
 │   ├── prm.yaml                   # Skywork PRM 설정 (step_token="\n")
 │   ├── policy.yaml                # Qwen2.5-Math + LoRA r=64
@@ -77,7 +81,7 @@ PAV/
 
 ### 3.1 `PAVMethod` Protocol (단일 인터페이스)
 
-[src/pav/base.py](src/pav/base.py) — 추출 방식별 차이를 dict 반환 형식으로 흡수.
+[src/pav/base.py](../src/pav/base.py) — 추출 방식별 차이를 dict 반환 형식으로 흡수.
 
 ```python
 @runtime_checkable
@@ -108,9 +112,9 @@ class PAVMethod(Protocol):
 | Reward 위치 | 각 step 마지막 토큰 위치 (reward_flag=1) |
 
 → Skywork 공식 inference 레포의 `prm_model.py` / `modeling_base.py` / `io_utils.py`를
-[src/prm/skywork/](src/prm/skywork/)에 **verbatim vendoring** (Apache 2.0).
+[src/prm/skywork/](../src/prm/skywork/)에 **verbatim vendoring** (Apache 2.0).
 
-[src/prm/score.py](src/prm/score.py)는 정책이 출력하는 `\n\n` 구분 step을 내부에서
+[src/prm/score.py](../src/prm/score.py)는 정책이 출력하는 `\n\n` 구분 step을 내부에서
 `\n`으로 자동 정규화(`_normalize_for_prm`)하여 사용자 코드는 boundary 차이를 신경쓰지 않아도 됨.
 
 ### 3.3 TRL GRPO 정합성
@@ -135,7 +139,7 @@ GRPOTrainer(
 ```
 
 reward func 시그니처가 `(prompts, completions, **dataset_columns) -> list[float]`이라는 점이
-초기 구현(positional `solution=...` 가정)과 다름 → [grpo_trainer.py](src/train/grpo_trainer.py)에서
+초기 구현(positional `solution=...` 가정)과 다름 → [grpo_trainer.py](../src/train/grpo_trainer.py)에서
 `kwargs["answer"]`로 정답을 받도록 정정.
 
 ### 3.4 보상 함수 — step-wise → trajectory scalar
@@ -156,15 +160,15 @@ step-wise credit assignment는 **GRPO의 group baseline (advantage normalization
 
 | 컴포넌트 | 파일 | 역할 |
 |---|---|---|
-| PRM 핸들러 | [src/prm/handlers.py](src/prm/handlers.py) | transport-무관 처리 함수 (op 분기, 직렬화) |
-| PRM 워커 | [src/prm/remote_worker.py](src/prm/remote_worker.py) | pika BlockingConnection consume + reply publish |
-| PRM 클라이언트 | [src/prm/remote_client.py](src/prm/remote_client.py) | `RemotePRM` — publish + reply_queue 폴링 (correlation_id) |
-| μ 핸들러 | [src/rollout/mu_handlers.py](src/rollout/mu_handlers.py) | 동일 패턴 |
-| μ 워커 | [src/rollout/mu_worker.py](src/rollout/mu_worker.py) | 동일 패턴 |
-| μ 클라이언트 | [src/rollout/remote_mu.py](src/rollout/remote_mu.py) | `RemoteMuSampler` |
+| PRM 핸들러 | [src/prm/handlers.py](../src/prm/handlers.py) | transport-무관 처리 함수 (op 분기, 직렬화) |
+| PRM 워커 | [src/prm/remote_worker.py](../src/prm/remote_worker.py) | pika BlockingConnection consume + reply publish |
+| PRM 클라이언트 | [src/prm/remote_client.py](../src/prm/remote_client.py) | `RemotePRM` — publish + reply_queue 폴링 (correlation_id) |
+| μ 핸들러 | [src/rollout/mu_handlers.py](../src/rollout/mu_handlers.py) | 동일 패턴 |
+| μ 워커 | [src/rollout/mu_worker.py](../src/rollout/mu_worker.py) | 동일 패턴 |
+| μ 클라이언트 | [src/rollout/remote_mu.py](../src/rollout/remote_mu.py) | `RemoteMuSampler` |
 | 분기 | `loader.load_prm`, `build_mu_from_policy_yaml` | yaml의 `mode: local|remote` 키로 자동 선택 |
-| Broker | [docker-compose.yml](docker-compose.yml) | RabbitMQ 3.13 (관리 UI 포함) |
-| Container | [Dockerfile](Dockerfile) + 4 services + profiles | 분산 PC별 service만 `--profile X up` |
+| Broker | [docker-compose.yml](../docker-compose.yml) | RabbitMQ 3.13 (관리 UI 포함) |
+| Container | [Dockerfile](../Dockerfile) + 4 services + profiles | 분산 PC별 service만 `--profile X up` |
 
 특징:
 - **워커 라운드로빈**: 같은 큐를 listen하는 워커 N개를 띄우면 RabbitMQ가 자동 분산.
@@ -176,7 +180,7 @@ step-wise credit assignment는 **GRPO의 group baseline (advantage normalization
 
 ### 3.6 W&B + 함정 모니터링
 
-[callbacks.PAVMonitorCallback](src/train/callbacks.py)가 `PAVRewardFn.stats_buffer / sample_buffer`를
+[callbacks.PAVMonitorCallback](../src/train/callbacks.py)가 `PAVRewardFn.stats_buffer / sample_buffer`를
 attach. 매 reward 계산마다 push되는 dict를 모아:
 
 - `pav/A_mean`, `A_std`, `A_q05/q95`
@@ -192,28 +196,28 @@ attach. 매 reward 계산마다 push되는 dict를 모아:
 
 | 모듈 | 책임 | 핵심 객체 |
 |------|------|------|
-| [src/prm/loader.py](src/prm/loader.py) | YAML → `PRMConfig` → `PRM` (lazy) | `load_prm`, `PRMConfig` |
-| [src/prm/score.py](src/prm/score.py) | Skywork PRM forward + step 보상 추출 | `PRM.score` / `score_batch` / `score_per_step` |
-| [src/prm/skywork/*](src/prm/skywork/) | Skywork 공식 inference 코드 vendoring | `PRM_MODEL`, `prepare_input`, `derive_step_rewards` |
-| [src/pav/base.py](src/pav/base.py) | PAV 추출 방식 통일 인터페이스 | `PAVMethod`, `is_distributional` |
-| [src/pav/differential.py](src/pav/differential.py) | Phase 0 차분 PAV | `DifferentialPAV` |
-| [src/pav/mc_rollout.py](src/pav/mc_rollout.py) | Phase 1 K개 μ-rollout 분포 | `MCRolloutPAV` |
-| [src/pav/reduce.py](src/pav/reduce.py) | B1/Q1/Q3/Q4 통합 reducer | `reduce_advantage` |
-| [src/rollout/parser.py](src/rollout/parser.py) | step 경계 분할 | `split_steps`, `normalize_step`, `join_steps` |
-| [src/rollout/mu_sampler.py](src/rollout/mu_sampler.py) | μ single-step sampler (vLLM) | `MuSampler`, `build_mu_from_policy_yaml` |
-| [src/rollout/vllm_rollout.py](src/rollout/vllm_rollout.py) | π trajectory rollout (BoN) | `VLLMRollout`, `Trajectory` |
-| [src/train/reward_fn.py](src/train/reward_fn.py) | PAV → step reward + stats push | `PAVRewardFn`, `build_pav_from_config` |
-| [src/train/policy_data.py](src/train/policy_data.py) | Qwen2.5-Math+LoRA, MATH/GSM8K | `build_policy`, `build_train_dataset` |
-| [src/train/grpo_trainer.py](src/train/grpo_trainer.py) | TRL GRPOTrainer 빌드 | `build_grpo_trainer`, `load_rl_config` |
-| [src/train/callbacks.py](src/train/callbacks.py) | W&B + 샘플 dump | `PAVMonitorCallback` |
-| [src/eval/sanity.py](src/eval/sanity.py) | S1~S4 자동 검증 | `run_sanity_checks`, `SanityItem/Result` |
-| [src/eval/bon_pav.py](src/eval/bon_pav.py) | BoN-PAV vs BoN-PRM | `bon_pav`, `bon_prm` |
-| [scripts/download_models.py](scripts/download_models.py) | HF 가중치 다운로드 | — |
-| [scripts/00_smoke_prm.py](scripts/00_smoke_prm.py) | PRM smoke (toy 4문장) | — |
-| [scripts/10_label_steps.py](scripts/10_label_steps.py) | MATH-500 자동 라벨링 | — |
-| [scripts/01_phase0_diff.py](scripts/01_phase0_diff.py) | Phase 0 + S1~S4 | — |
-| [scripts/02_phase1_mc.py](scripts/02_phase1_mc.py) | Phase 1 K 비교 | — |
-| [scripts/03_grpo_train.py](scripts/03_grpo_train.py) | GRPO+LoRA 학습 entry | — |
+| [src/prm/loader.py](../src/prm/loader.py) | YAML → `PRMConfig` → `PRM` (lazy) | `load_prm`, `PRMConfig` |
+| [src/prm/score.py](../src/prm/score.py) | Skywork PRM forward + step 보상 추출 | `PRM.score` / `score_batch` / `score_per_step` |
+| [src/prm/skywork/*](../src/prm/skywork/) | Skywork 공식 inference 코드 vendoring | `PRM_MODEL`, `prepare_input`, `derive_step_rewards` |
+| [src/pav/base.py](../src/pav/base.py) | PAV 추출 방식 통일 인터페이스 | `PAVMethod`, `is_distributional` |
+| [src/pav/differential.py](../src/pav/differential.py) | Phase 0 차분 PAV | `DifferentialPAV` |
+| [src/pav/mc_rollout.py](../src/pav/mc_rollout.py) | Phase 1 K개 μ-rollout 분포 | `MCRolloutPAV` |
+| [src/pav/reduce.py](../src/pav/reduce.py) | B1/Q1/Q3/Q4 통합 reducer | `reduce_advantage` |
+| [src/rollout/parser.py](../src/rollout/parser.py) | step 경계 분할 | `split_steps`, `normalize_step`, `join_steps` |
+| [src/rollout/mu_sampler.py](../src/rollout/mu_sampler.py) | μ single-step sampler (vLLM) | `MuSampler`, `build_mu_from_policy_yaml` |
+| [src/rollout/vllm_rollout.py](../src/rollout/vllm_rollout.py) | π trajectory rollout (BoN) | `VLLMRollout`, `Trajectory` |
+| [src/train/reward_fn.py](../src/train/reward_fn.py) | PAV → step reward + stats push | `PAVRewardFn`, `build_pav_from_config` |
+| [src/train/policy_data.py](../src/train/policy_data.py) | Qwen2.5-Math+LoRA, MATH/GSM8K | `build_policy`, `build_train_dataset` |
+| [src/train/grpo_trainer.py](../src/train/grpo_trainer.py) | TRL GRPOTrainer 빌드 | `build_grpo_trainer`, `load_rl_config` |
+| [src/train/callbacks.py](../src/train/callbacks.py) | W&B + 샘플 dump | `PAVMonitorCallback` |
+| [src/eval/sanity.py](../src/eval/sanity.py) | S1~S4 자동 검증 | `run_sanity_checks`, `SanityItem/Result` |
+| [src/eval/bon_pav.py](../src/eval/bon_pav.py) | BoN-PAV vs BoN-PRM | `bon_pav`, `bon_prm` |
+| [scripts/download_models.py](../scripts/download_models.py) | HF 가중치 다운로드 | — |
+| [scripts/00_smoke_prm.py](../scripts/00_smoke_prm.py) | PRM smoke (toy 4문장) | — |
+| [scripts/10_label_steps.py](../scripts/10_label_steps.py) | MATH-500 자동 라벨링 | — |
+| [scripts/01_phase0_diff.py](../scripts/01_phase0_diff.py) | Phase 0 + S1~S4 | — |
+| [scripts/02_phase1_mc.py](../scripts/02_phase1_mc.py) | Phase 1 K 비교 | — |
+| [scripts/03_grpo_train.py](../scripts/03_grpo_train.py) | GRPO+LoRA 학습 entry | — |
 
 ---
 

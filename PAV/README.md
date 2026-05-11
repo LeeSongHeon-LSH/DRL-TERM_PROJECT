@@ -223,4 +223,12 @@ mu:
 | G2 | Q3/Q4가 pass@256 +3%p **또는** entropy decay 50% 완화 |
 | G3 | A.mean only vs A.mean+std ablation 유의차 |
 
-자세한 실행 계획은 `구현 계획 — 차분 PAV + 분포형 보상 (Phase 0).md` 참고.
+## 문서
+
+자세한 보고서/계획서는 [docs/](docs/) 폴더 참고:
+
+- [docs/IMPLEMENTATION_REPORT.md](docs/IMPLEMENTATION_REPORT.md) — 구현 보고서 (설계 결정 + 모듈별 내역 + 검증 게이트)
+- [docs/TRAINING_FLOW.md](docs/TRAINING_FLOW.md) — 학습 흐름 다이어그램 (시스템 구조 / RPC 시퀀스 / 콜라보레이션 / 사양)
+- [docs/DOCKER_STAGE_TESTS.md](docs/DOCKER_STAGE_TESTS.md) — Docker 단계별 테스트 계획 (8 stages, VRAM 제약 + 옵션 A/B/C)
+- [docs/STAGE_TEST_REPORT.md](docs/STAGE_TEST_REPORT.md) — 단계별 실제 실행 결과 보고서 (5건 fix + 학습 신호 증거)
+- [docs/구현 계획 — 차분 PAV + 분포형 보상 (Phase 0) ...md](docs/) — 원본 계획서
