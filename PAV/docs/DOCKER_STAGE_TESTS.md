@@ -1,5 +1,19 @@
 # Docker 단계별 테스트 플랜
 
+> ℹ️ **이 문서는 RabbitMQ 시점의 Stage 0~8 계획**입니다 — 모두 검증 완료([STAGE_TEST_REPORT.md](STAGE_TEST_REPORT.md)). 현재는 분산 통신을 **Ray로 마이그레이션 중**이며, 동일한 구조로 **Ray Stage R0~R7**가 추가 예정 ([RAY_MIGRATION.md](RAY_MIGRATION.md)).
+>
+> | 현행 (RabbitMQ) | Ray | 검증 대상 |
+> |---|---|---|
+> | Stage 1 broker | R0 Ray Head 컨테이너 단독 | head 가용 |
+> | Stage 2 publish | R1 본체 `ray.init(address=…)` | client 연결 |
+> | Stage 3 PRM worker | R2 RayPRMActor 단독 (replicas=1) | actor 등록 + GPU 로드 |
+> | (추가) | R3 RayPRMActor replicas=5 round-robin | scheduler 분산 |
+> | Stage 4 PRM E2E | R4 RayPRMClient (load_prm 자동 wrap) | full RPC |
+> | Stage 5 μ worker | R5 RayMuActor 단독 | μ 로드 |
+> | Stage 6 μ E2E | R6 RayMuClient | full RPC |
+> | Stage 7 PRM+μ 동시 | (R6에 통합) — MCRolloutPAV K=16 | 분포 신호 |
+> | Stage 8 학습 | R7 TorchTrainer wrap + 50 step smoke + LoRA 검증 | 학습 신호 |
+
 ## 이 테스트의 목적
 
 두 가지 측면을 **분리해서** 검증:

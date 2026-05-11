@@ -46,6 +46,8 @@ class MuSampler:
             dtype=self.cfg.dtype,
             gpu_memory_utilization=self.cfg.gpu_memory_utilization,
             max_model_len=self.cfg.max_model_len,
+            enforce_eager=True,                # WSL+Ray actor 조합에서 CUDA graph capture 멈춤 우회
+            disable_custom_all_reduce=True,    # single GPU라 all-reduce 불필요
         )
 
     # ------------------------------------------------------------------ build
@@ -81,28 +83,43 @@ class MuSampler:
         return [c.text.strip() for c in completions]
 
 
-def build_mu_from_policy_yaml(path: str | Path):
-    """policy.yaml의 mu: 섹션에서 MuSampler 또는 RemoteMuSampler 생성.
+def build_mu_from_policy_yaml(path: str | Path, *, force_local: bool = False):
+    """policy.yaml의 mu: 섹션에서 MuSampler 또는 RayMuClient 생성.
 
-    mode == "remote" 이면 remote_urls의 μ 서버에 HTTP로 sample 요청.
+    mode 분기:
+        "local" — 같은 GPU에 vLLM 인스턴스 (MuSampler)
+        "ray"   — Ray cluster의 named actor에 RPC (RayMuClient)
+
+    Args:
+        force_local: True면 yaml의 mode='ray'이어도 local로 강제 (actor 내부에서 호출 시).
     """
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     mu_cfg = data.get("mu", {})
 
-    mode = mu_cfg.get("mode", "local")
-    if mode == "remote":
-        from .remote_mu import RemoteMuConfig, RemoteMuSampler
-        return RemoteMuSampler(
-            RemoteMuConfig(
-                amqp_url=mu_cfg.get("amqp_url", "amqp://guest:guest@localhost:5672/"),
-                request_queue=mu_cfg.get("request_queue", "mu.requests"),
+    mode = "local" if force_local else mu_cfg.get("mode", "local")
+    if mode == "ray":
+        import ray
+
+        from .ray_client import RayMuClient, RayMuConfig
+
+        ray_address = mu_cfg.get("ray_address", "auto")
+        namespace = mu_cfg.get("namespace", "pav-rl")
+        if not ray.is_initialized():
+            ray.init(address=ray_address, namespace=namespace, ignore_reinit_error=True)
+        return RayMuClient(
+            RayMuConfig(
+                actor_name=mu_cfg.get("actor_name", "mu-actor"),
+                namespace=namespace,
                 rpc_timeout=mu_cfg.get("rpc_timeout", 180.0),
                 temperature=mu_cfg.get("temperature", 1.0),
                 top_p=mu_cfg.get("top_p", 0.95),
                 max_new_tokens=mu_cfg.get("max_new_tokens", 256),
             )
         )
+
+    if mode != "local":
+        raise ValueError(f"Unknown μ mode: {mode!r} (지원: 'local' | 'ray')")
 
     return MuSampler(
         MuConfig(

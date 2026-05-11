@@ -3,6 +3,8 @@
 천공 PRM(Skywork-o1-Open-PRM-Qwen-2.5-1.5B)을 활용해 PRM 추가 학습 없이 GRPO+LoRA 학습까지 가는 파이프라인.
 (7B 버전도 [configs/prm.yaml](configs/prm.yaml)의 `model_id` 한 줄 교체로 사용 가능.)
 
+> ⚠️ **분산 통신을 RabbitMQ → Ray로 전환 완료** (코드/문서). 검증은 R0~R3까지 통과 ([docs/STAGE_R_REPORT.md](docs/STAGE_R_REPORT.md)). R4~R7(μ vLLM + trainer)은 WSL 환경 한계로 보류 — 분산 환경(Linux 네이티브) 배포 시 재검증 예정. 이전 RabbitMQ 구조는 history([docs/STAGE_TEST_REPORT.md](docs/STAGE_TEST_REPORT.md))에서 Stage 0~8 모두 검증 완료.
+
 ## 디렉토리
 
 ```
@@ -129,10 +131,12 @@ docker compose --profile all up -d
 - **outputs**: trainer는 `./outputs`에 LoRA 체크포인트 저장 (호스트 bind mount).
 - **shm_size**: trainer는 vLLM 내부 multiprocessing 때문에 8GB 권장 (compose에 이미 설정).
 
-## 분산 구조 (RabbitMQ)
+## 분산 구조 (Ray, 마이그레이션 중)
 
 PRM 1.5B 본체 적재 + 정책 7B LoRA + vLLM colocate를 한 GPU에 다 올리면 빠듯합니다.
-**PRM과 μ를 다른 PC들로 분리**하고 RabbitMQ 큐로 RPC하면 본체에는 학습 정책만 남아 OOM 회피 + 워커 추가/제거가 자유로워집니다.
+**PRM과 μ를 다른 PC들로 분리**하고 Ray cluster로 RPC하면 본체에는 학습 정책만 남아 OOM 회피 + 워커 추가/제거가 자유로워집니다.
+
+> 참고: 아래 RabbitMQ 안내는 history 시점 기준이고, Ray 전환 진행 상황과 최종 토폴로지는 [docs/RAY_MIGRATION.md](docs/RAY_MIGRATION.md) 참고.
 
 ### 1) 브로커 1대에서 — RabbitMQ
 ```bash
@@ -227,8 +231,10 @@ mu:
 
 자세한 보고서/계획서는 [docs/](docs/) 폴더 참고:
 
+- [docs/RAY_MIGRATION.md](docs/RAY_MIGRATION.md) — Ray 전환 진행 (단계 1~11 완료, 코드/문서 완성)
+- [docs/STAGE_R_REPORT.md](docs/STAGE_R_REPORT.md) — **Ray Stage R0~R7 검증 결과** (R0~R3 ✅ / R4~R7 ⏸ WSL 한계)
 - [docs/IMPLEMENTATION_REPORT.md](docs/IMPLEMENTATION_REPORT.md) — 구현 보고서 (설계 결정 + 모듈별 내역 + 검증 게이트)
 - [docs/TRAINING_FLOW.md](docs/TRAINING_FLOW.md) — 학습 흐름 다이어그램 (시스템 구조 / RPC 시퀀스 / 콜라보레이션 / 사양)
-- [docs/DOCKER_STAGE_TESTS.md](docs/DOCKER_STAGE_TESTS.md) — Docker 단계별 테스트 계획 (8 stages, VRAM 제약 + 옵션 A/B/C)
-- [docs/STAGE_TEST_REPORT.md](docs/STAGE_TEST_REPORT.md) — 단계별 실제 실행 결과 보고서 (5건 fix + 학습 신호 증거)
+- [docs/DOCKER_STAGE_TESTS.md](docs/DOCKER_STAGE_TESTS.md) — Docker 단계별 테스트 계획 (RabbitMQ 8 + Ray R 매핑)
+- [docs/STAGE_TEST_REPORT.md](docs/STAGE_TEST_REPORT.md) — RabbitMQ 시점 검증 결과 (history, 학습 신호 증거)
 - [docs/구현 계획 — 차분 PAV + 분포형 보상 (Phase 0) ...md](docs/) — 원본 계획서

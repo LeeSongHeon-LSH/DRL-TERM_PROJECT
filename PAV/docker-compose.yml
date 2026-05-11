@@ -1,24 +1,24 @@
-# 4개 service + profiles로 분산 배포 / 단일 호스트 테스트 둘 다 지원.
+# 4개 service + profiles로 Ray cluster 기반 분산 배포 / 단일 호스트 테스트 둘 다 지원.
 #
 # === 사용 ===
 # 한 번 빌드:
 #   docker compose build
 #
 # 분산 시 (각 PC에서 자기 profile만):
-#   브로커 PC:    docker compose --profile broker  up -d
-#   PRM 워커 PC:  docker compose --profile prm     up -d
-#   μ  워커 PC:  docker compose --profile mu      up -d
-#   본체:         docker compose --profile trainer up -d
+#   본체/Head PC: docker compose --profile head    up -d   # Ray head
+#   PRM 워커 PC:  docker compose --profile prm     up -d   # 5070 ×N (RAY_ADDRESS로 head 가리킴)
+#   μ  워커 PC:  docker compose --profile mu      up -d   # 16GB+ GPU
+#   본체:        docker compose --profile trainer up -d   # GRPOTrainer (Ray Train)
 #
-# 단일 호스트 모든 것 한꺼번에:
+# 단일 호스트 모든 것:
 #   docker compose --profile all up -d
 #
 # === 환경 ===
-# .env (또는 export) 로 다음을 정의 권장:
-#   AMQP_URL=amqp://guest:guest@<broker-host>:5672/
-#   HF_HOME_HOST=/path/on/host/.hf_cache    # 호스트의 HF 캐시 경로 (모델 영속화)
-#   HF_TOKEN=...                             # public이라 선택, rate limit 회피용
-#   WANDB_API_KEY=...                        # trainer 전용
+# .env (또는 export) 로:
+#   RAY_ADDRESS=<head-host>:6379    # 분산 시 worker가 head에 join할 주소
+#   HF_HOME_HOST=/path/to/cache     # 호스트 HF 캐시 경로
+#   HF_TOKEN=...                    # 옵션
+#   WANDB_API_KEY=...               # trainer 전용
 
 x-gpu: &gpu
   deploy:
@@ -30,36 +30,42 @@ x-gpu: &gpu
             capabilities: [gpu]
 
 x-common-env: &common-env
-  AMQP_URL: ${AMQP_URL:-amqp://guest:guest@rabbitmq:5672/}
+  RAY_ADDRESS: ${RAY_ADDRESS:-ray-head:6379}
+  RAY_NAMESPACE: pav-rl
   HF_HOME: /cache/huggingface
   HF_TOKEN: ${HF_TOKEN:-}
-  # hf_transfer 미설치 시 Dockerfile의 HF_HUB_ENABLE_HF_TRANSFER=1을 override
   HF_HUB_ENABLE_HF_TRANSFER: "0"
 
 x-volumes: &common-volumes
   - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
-  # 코드 hot-reload — 이미지 재빌드 없이 src/scripts 수정 즉시 반영 (개발/디버깅 용)
+  # 코드 hot-reload — 이미지 재빌드 없이 src/scripts 수정 즉시 반영
   - ./src:/app/src:ro
   - ./scripts:/app/scripts:ro
   - ./configs:/app/configs:ro
 
 services:
-  # ---------------------------- ① RabbitMQ broker ----------------------------
-  rabbitmq:
-    image: rabbitmq:3.13-management
-    container_name: pav-rabbitmq
+  # ---------------------------- ① Ray Head ----------------------------
+  # 본체 PC 또는 별도 host에서 1개 실행. Ray cluster의 GCS + scheduler.
+  ray-head:
+    build: .
+    image: pav-rl:latest
+    container_name: pav-ray-head
     restart: unless-stopped
-    profiles: ["broker", "all"]
-    ports:
-      - "5672:5672"      # AMQP
-      - "15672:15672"    # Management UI
+    profiles: ["head", "all"]
+    <<: *gpu
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
-    volumes:
-      - rabbit_data:/var/lib/rabbitmq
+      <<: *common-env
+    volumes: *common-volumes
+    ports:
+      - "6379:6379"      # GCS
+      - "8265:8265"      # Dashboard
+      - "10001:10001"    # Ray Client
+    command: ["ray", "start", "--head", "--port=6379", "--dashboard-host=0.0.0.0", "--num-cpus=2", "--num-gpus=0", "--block"]
+    # head는 학습/추론 안 함 (num-gpus=0). GPU 자원은 prm/mu/trainer에 맡김.
+    shm_size: "4g"           # Ray plasma object store용
 
-  # ---------------------------- ② PRM 워커 (RTX 5070급) ----------------------------
+  # ---------------------------- ② PRM Ray Worker ----------------------------
+  # 5070 PC × N대. Ray Head에 join + serve_prm_ray.py로 named actor 등록.
   prm-worker:
     build: .
     image: pav-rl:latest
@@ -70,17 +76,12 @@ services:
     environment:
       <<: *common-env
     volumes: *common-volumes
-    command: >
-      python scripts/serve_prm.py
-      --config configs/prm.yaml
-      --amqp-url ${AMQP_URL:-amqp://guest:guest@rabbitmq:5672/}
-      --queue prm.requests
-      --prefetch 1
-    # 단일 호스트 테스트 시 broker 대기
+    command: bash -lc "ray start --address=${RAY_ADDRESS:-ray-head:6379} && python scripts/serve_prm_ray.py --config configs/prm.yaml --address ${RAY_ADDRESS:-ray-head:6379} --num-replicas 1"
     depends_on:
-      - rabbitmq
+      - ray-head
+    shm_size: "4g"           # Ray plasma store
 
-  # ---------------------------- ③ μ 워커 (16GB+ GPU) ----------------------------
+  # ---------------------------- ③ μ Ray Worker ----------------------------
   mu-worker:
     build: .
     image: pav-rl:latest
@@ -91,16 +92,13 @@ services:
     environment:
       <<: *common-env
     volumes: *common-volumes
-    command: >
-      python scripts/serve_mu.py
-      --config configs/policy.yaml
-      --amqp-url ${AMQP_URL:-amqp://guest:guest@rabbitmq:5672/}
-      --queue mu.requests
-      --prefetch 1
+    command: bash -lc "ray start --address=${RAY_ADDRESS:-ray-head:6379} && python scripts/serve_mu_ray.py --config configs/policy.yaml --address ${RAY_ADDRESS:-ray-head:6379}"
     depends_on:
-      - rabbitmq
+      - ray-head
+    shm_size: "8g"           # vLLM + Ray plasma store용 shared memory
 
-  # ---------------------------- ④ 학습 본체 (3090) ----------------------------
+  # ---------------------------- ④ Trainer ----------------------------
+  # 본체 학습. Ray Train (TorchTrainer)로 wrap → multi-GPU 확장 가능.
   trainer:
     build: .
     image: pav-rl:latest
@@ -113,18 +111,10 @@ services:
     volumes:
       - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
       - ./outputs:/app/outputs
-      - ./configs:/app/configs:ro       # config 핫스왑 가능
+      - ./configs:/app/configs:ro
       - ./src:/app/src:ro
       - ./scripts:/app/scripts:ro
-    command: >
-      python scripts/03_grpo_train.py
-      --rl-config configs/rl_q3.yaml
-      --prm-config configs/prm.yaml
-      --policy-config configs/policy.yaml
+    command: bash -lc "ray start --address=${RAY_ADDRESS:-ray-head:6379} && python scripts/03_grpo_train.py --rl-config configs/rl_q3.yaml --prm-config configs/prm.yaml --policy-config configs/policy.yaml --num-workers 1"
     depends_on:
-      - rabbitmq
-    # IPC: vLLM 내부 multiprocessing 위한 shared memory 충분히 (default 64M는 부족)
-    shm_size: "8g"
-
-volumes:
-  rabbit_data:
+      - ray-head
+    shm_size: "8g"           # vLLM 내부 multiprocessing 위한 shared memory

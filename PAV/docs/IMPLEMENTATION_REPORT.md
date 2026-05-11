@@ -153,28 +153,26 @@ trajectory r = Σ_h (R_ex · 𝟙[h=H] + α · Ã_h)
 step-wise credit assignment는 **GRPO의 group baseline (advantage normalization)**이
 대신 처리하므로 별도 step-level discount는 추가하지 않음.
 
-### 3.5 분산 PRM / μ — RabbitMQ RPC (3090 24GB 단일 본체 대응)
+### 3.5 분산 PRM / μ — Ray (마이그레이션 중, 이전: RabbitMQ)
 
-`PRM`/`MuSampler` 클래스의 인터페이스(`score`/`score_batch`/`sample_step_batch`)를 **그대로**
-보존하고, 내부 transport만 AMQP RPC로 교체. 본체는 publish, 워커들이 consume.
+> 현재 **RabbitMQ → Ray로 마이그레이션 진행 중** — 진행 상황은 [RAY_MIGRATION.md](RAY_MIGRATION.md). RabbitMQ 시점 검증 결과는 [STAGE_TEST_REPORT.md](STAGE_TEST_REPORT.md)에서 history로 보존.
+
+`PRM` / `MuSampler` 클래스의 인터페이스(`score`/`score_batch`/`sample_step_batch`)를 **그대로** 보존하고, 내부 transport만 Ray actor RPC로 교체. 본체가 ray.get으로 worker actor에 직접 호출.
 
 | 컴포넌트 | 파일 | 역할 |
 |---|---|---|
-| PRM 핸들러 | [src/prm/handlers.py](../src/prm/handlers.py) | transport-무관 처리 함수 (op 분기, 직렬화) |
-| PRM 워커 | [src/prm/remote_worker.py](../src/prm/remote_worker.py) | pika BlockingConnection consume + reply publish |
-| PRM 클라이언트 | [src/prm/remote_client.py](../src/prm/remote_client.py) | `RemotePRM` — publish + reply_queue 폴링 (correlation_id) |
-| μ 핸들러 | [src/rollout/mu_handlers.py](../src/rollout/mu_handlers.py) | 동일 패턴 |
-| μ 워커 | [src/rollout/mu_worker.py](../src/rollout/mu_worker.py) | 동일 패턴 |
-| μ 클라이언트 | [src/rollout/remote_mu.py](../src/rollout/remote_mu.py) | `RemoteMuSampler` |
-| 분기 | `loader.load_prm`, `build_mu_from_policy_yaml` | yaml의 `mode: local|remote` 키로 자동 선택 |
-| Broker | [docker-compose.yml](../docker-compose.yml) | RabbitMQ 3.13 (관리 UI 포함) |
-| Container | [Dockerfile](../Dockerfile) + 4 services + profiles | 분산 PC별 service만 `--profile X up` |
+| PRM 핸들러 | [src/prm/ray_actor.py](../src/prm/ray_actor.py) (`PRMHandler`) | transport-무관 처리 로직 (op 분기, 타입 변환) |
+| PRM Actor | [src/prm/ray_actor.py](../src/prm/ray_actor.py) (`RayPRMActor`) | `@ray.remote(num_gpus=1)` — GPU 1장당 1개, named actor 등록 |
+| PRM 클라이언트 | [src/prm/ray_client.py](../src/prm/ray_client.py) (`RayPRMClient`, `RayPRMClientPool`) | 단일 / N replicas 라운드로빈, score_batch 자동 분산 |
+| μ 핸들러/Actor/클라이언트 | `src/rollout/ray_actor.py`, `ray_client.py` (예정) | PRM과 동일 패턴 — 단계 3에서 작성 |
+| 분기 | `loader.load_prm`, `build_mu_from_policy_yaml` | yaml의 `mode: local|ray` (단계 4) |
+| Cluster | `docker-compose.yml`의 `ray-head` service (예정) | Ray head + worker nodes (단계 7) |
 
 특징:
-- **워커 라운드로빈**: 같은 큐를 listen하는 워커 N개를 띄우면 RabbitMQ가 자동 분산.
-- **표준 RPC**: `reply_to` + `correlation_id`, 임시 exclusive 큐.
-- **Backpressure**: 큐가 차면 publisher가 자연스럽게 대기.
-- **transport 추상화**: handlers.py를 모듈 함수로 분리 → 테스트는 broker 없이 직접 호출.
+- **워커 라운드로빈**: `RayPRMClientPool`이 N개 named actor 핸들을 순회. `score_batch`는 N-way 자동 분산.
+- **zero-copy**: tensor 직접 전달 시 plasma store. 현재 페이로드(텍스트)는 작아 이득 미미하나 향후 확장 시 의미.
+- **transport 추상화**: `PRMHandler`를 별도 클래스로 분리 → 테스트는 ray 없이 `PRMHandler` 직접 또는 `FakeActor + ray.get monkeypatch`로 검증.
+- **Ray Train wrap (예정)**: 단일 GPU에선 num_workers=1, 향후 multi-GPU 학습으로 자연 확장.
 
 `PAVMethod` / `PAVRewardFn` / `GRPOTrainer`는 인스턴스 타입을 신경쓰지 않으므로 수정 무.
 
@@ -233,6 +231,7 @@ attach. 매 reward 계산마다 push되는 dict를 모아:
 | TRL | 0.15.2 (GRPO + vllm_mode=colocate + peft_config) |
 | PEFT | 0.14+ |
 | accelerate | 1.0+ (Skywork PRM_MODEL의 PartialState 의존) |
+| **Ray** | **2.40+** (base: `ray[default]`, gpu extra: `ray[train]`) — RabbitMQ/pika 교체 중 |
 
 3개 extras 그룹:
 

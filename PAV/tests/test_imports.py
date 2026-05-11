@@ -86,6 +86,20 @@ def test_import_grpo_trainer():
     assert GRPOSettings is not None
 
 
+def test_import_ray_modules():
+    """Ray actor/client 모듈이 import 가능 (실제 ray import는 lazy)."""
+    from src.prm.ray_actor import PRMHandler, get_actor_cls
+    from src.prm.ray_client import RayPRMClient, RayPRMClientPool, RayPRMConfig
+    from src.rollout.ray_actor import MuHandler, get_actor_cls as get_mu_actor_cls
+    from src.rollout.ray_client import RayMuClient, RayMuConfig
+    from src.train.ray_train import build_ray_trainer, train_worker
+    assert PRMHandler is not None and MuHandler is not None
+    assert callable(get_actor_cls) and callable(get_mu_actor_cls)
+    assert RayPRMClient is not None and RayPRMClientPool is not None
+    assert RayMuClient is not None
+    assert callable(build_ray_trainer) and callable(train_worker)
+
+
 if __name__ == "__main__":
     import traceback
     funcs = [v for k, v in globals().items() if k.startswith("test_") and callable(v)]

@@ -1,8 +1,11 @@
-# Docker 단계별 테스트 결과 보고서
+# Docker 단계별 테스트 결과 보고서 (RabbitMQ 시점 — history)
 
 실행일: 2026-05-11
 환경: RTX 3090 24GB 단일 호스트 (WSL2 + Docker Desktop + nvidia runtime)
 대상 계획: [DOCKER_STAGE_TESTS.md](DOCKER_STAGE_TESTS.md)
+transport: **RabbitMQ + pika RPC** (현재 코드베이스는 [Ray로 마이그레이션 중](RAY_MIGRATION.md))
+
+> 본 문서는 RabbitMQ 구조에서 Stage 0~8을 모두 검증한 **history 기록**입니다. Ray 전환 후 Stage R0~R7 결과는 별도 보고서로 추가될 예정.
 
 ---
 
@@ -62,7 +65,7 @@ PRM 1.5B(Skywork-o1-Open-PRM-Qwen-2.5-1.5B) 로딩 + AMQP consumer 등록. accel
 
 ### Stage 4 — 본체 ↔ PRM E2E (full RPC 라운드트립)
 
-[scripts/_smoke_remote_prm.py](../scripts/_smoke_remote_prm.py) 결과:
+`scripts/_smoke_remote_prm.py` (RabbitMQ 시점 — Ray 전환 시 삭제됨) 결과:
 
 | 입력 step | PRM 점수 | 의미 |
 |---|---:|---|

@@ -21,8 +21,8 @@ generation:
     - "\n\n\n"
 
 # Prover μ — base model, frozen, MC rollout에서 single-step sampling용
-# mode: "local"  → 본체 GPU에 vLLM 인스턴스 (gpu_memory_utilization 비율만큼 점유)
-# mode: "remote" → 워커들이 amqp_url의 request_queue를 consume (RemoteMuSampler)
+# mode: "local" → 본체 GPU에 vLLM 인스턴스 (gpu_memory_utilization 비율만큼 점유)
+# mode: "ray"   → Ray cluster의 named actor에 RPC (RayMuClient)
 mu:
   model_id: Qwen/Qwen2.5-Math-7B-Instruct   # frozen base (LoRA 미적용)
   temperature: 1.0
@@ -30,12 +30,14 @@ mu:
   max_new_tokens: 256       # single step만 — step boundary에서 stop
   step_stop:
     - "\n\n"
-  # μ 단독 (Stage 5/6) 또는 trainer는 다른 GPU일 때: 0.75 권장
-  # PRM과 동거 (Stage 7) 또는 trainer와 동거 시: 0.50으로 낮춤
+  # μ 단독 또는 trainer가 다른 GPU일 때: 0.75 권장
+  # PRM/trainer와 같은 GPU에 동거 시: 0.50 권장
   gpu_memory_utilization: 0.75
-  max_model_len: 4096            # KV cache 메모리 제한 (default 32k는 24GB 카드에서 OOM)
+  max_model_len: 4096            # KV cache 제한 (default 32k는 24GB 카드에서 OOM)
   dtype: bfloat16
+  # ---- 분산 모드 (Ray cluster RPC)
   mode: local
-  amqp_url: amqp://guest:guest@localhost:5672/
-  request_queue: mu.requests
+  ray_address: auto
+  namespace: pav-rl
+  actor_name: mu-actor
   rpc_timeout: 180

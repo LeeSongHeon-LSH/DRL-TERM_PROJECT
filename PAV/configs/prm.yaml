@@ -14,10 +14,15 @@ max_model_len: 4096
 step_token: "\n"
 batch_size: 16
 
-# ---- 분산 모드 (RabbitMQ RPC)
-# mode: "local"   → 같은 GPU에 PRM 가중치 로드
-# mode: "remote"  → 워커들이 amqp_url의 request_queue를 consume, 본체가 RemotePRM으로 publish
+# ---- 분산 모드 (Ray cluster RPC)
+# mode: "local" → 같은 GPU에 PRM 가중치 로드 (PRM 인스턴스)
+# mode: "ray"   → Ray cluster의 named actor(들)에 RPC
+#                 - num_replicas: 1 → RayPRMClient (단일 actor)
+#                 - num_replicas: 2+ → RayPRMClientPool (라운드로빈 + score_batch N-way 분산)
+#                 예: 5070 GPU 5대 분산 → num_replicas: 5
 mode: local
-amqp_url: amqp://guest:guest@localhost:5672/
-request_queue: prm.requests
+ray_address: auto                          # "auto" = head 자동 감지 / 명시: ray://head:10001
+namespace: pav-rl
+actor_name: prm-actor                      # named actor — replicas≥2면 prm-actor-0, -1, ...
+num_replicas: 1
 rpc_timeout: 120
