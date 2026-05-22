@@ -41,12 +41,15 @@ _prm = None  # lazy 적재 (lifespan startup 또는 명시적 호출)
 
 
 def _ensure_prm():
-    """env PRM_CONFIG에서 yaml 경로 읽어 PRM 적재 (한 번만)."""
+    """env PRM_CONFIG에서 yaml 경로 읽어 PRM 적재 (한 번만).
+
+    서버 측은 항상 mode='local' — yaml의 mode='remote'(학습 PC용 설정)을 override.
+    """
     global _prm
     if _prm is None:
         cfg_path = os.environ.get("PRM_CONFIG", "configs/prm.yaml")
-        log.info(f"Loading PRM from {cfg_path}")
-        _prm = load_prm(cfg_path)
+        log.info(f"Loading PRM from {cfg_path} (server-side: forcing mode=local)")
+        _prm = load_prm(cfg_path, mode="local")
         _prm._ensure_loaded()
         log.info(f"PRM ready: {_prm.cfg.name} ({_prm.cfg.model_id}) [{_prm.cfg.quantization}]")
     return _prm
