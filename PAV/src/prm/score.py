@@ -67,6 +67,12 @@ class PRM:
         if self.cfg.quantization == "awq":
             # AWQ 양자화 가중치 — torch_dtype은 fp16 권장 (Skywork README와 동일)
             load_kwargs["torch_dtype"] = torch.float16
+        elif self.cfg.quantization == "8bit":
+            # bitsandbytes LLM.int8() — 가중치 int8, 활성/연산은 fp16
+            from transformers import BitsAndBytesConfig
+
+            load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+            load_kwargs["torch_dtype"] = torch.float16
         else:
             dtype = {
                 "float16": torch.float16,

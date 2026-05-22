@@ -1,117 +1,107 @@
-"""RemoteMuSampler — RabbitMQ RPC 클라이언트.
+"""RemoteMuSampler — vLLM의 OpenAI 호환 API 클라이언트.
 
-기존 MuSampler와 동일한 (sample_step, sample_step_batch) 인터페이스. MCRolloutPAV는 그대로 받음.
+추론 PC에서 vLLM stock 서버를 띄우면 됨 (별도 서버 코드 X):
+    python -m vllm.entrypoints.openai.api_server \
+        --model Qwen/Qwen2.5-Math-7B-Instruct \
+        --gpu-memory-utilization 0.65 \
+        --max-model-len 4096 --port 8001
+
+기존 MuSampler와 동일한 (sample_step, sample_step_batch) 인터페이스.
+MCRolloutPAV는 그대로 받음.
 """
 from __future__ import annotations
 
-import json
 import logging
-import threading
-import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
 
 @dataclass
 class RemoteMuConfig:
-    amqp_url: str = "amqp://guest:guest@localhost:5672/"
-    request_queue: str = "mu.requests"
-    rpc_timeout: float = 180.0
-    # 서버 측 SamplingParams 힌트 (현재 무시)
+    endpoint: str = "http://localhost:8001"
+    model_id: str = "Qwen/Qwen2.5-Math-7B-Instruct"
+    timeout: float = 180.0
     temperature: float = 1.0
     top_p: float = 0.95
     max_new_tokens: int = 256
+    step_stop: tuple[str, ...] = ("\n\n",)
+
+
+class _CfgShim:
+    """vLLM 어떤 코드도 cfg.model_id를 참조할 수 있게 — 호환용."""
+
+    def __init__(self, model_id: str):
+        self.model_id = model_id
 
 
 class RemoteMuSampler:
+    """MuSampler와 동일 인터페이스 — sample_step / sample_step_batch (HTTP transport)."""
+
     def __init__(self, cfg: RemoteMuConfig):
         self.cfg = cfg
-        self._conn = None
-        self._channel = None
-        self._reply_queue: str | None = None
-        self._responses: dict[str, bytes] = {}
-        self._lock = threading.Lock()
+        self._client = None
+        self._endpoint = cfg.endpoint.rstrip("/")
+        # MuSampler처럼 .cfg.model_id 접근 호환
+        # (이미 RemoteMuConfig에 model_id 있어 추가 작업 불필요)
 
-    def _ensure_connected(self):
-        if self._channel is not None:
-            return
-        import pika
+    # ------------------------------------------------------------------ http
+    def _get_client(self):
+        if self._client is None:
+            import httpx
 
-        self._conn = pika.BlockingConnection(pika.URLParameters(self.cfg.amqp_url))
-        self._channel = self._conn.channel()
-        self._channel.queue_declare(queue=self.cfg.request_queue, durable=False)
-        result = self._channel.queue_declare(queue="", exclusive=True, auto_delete=True)
-        self._reply_queue = result.method.queue
-        self._channel.basic_consume(
-            queue=self._reply_queue,
-            on_message_callback=self._on_response,
-            auto_ack=True,
+            self._client = httpx.Client(timeout=self.cfg.timeout)
+        return self._client
+
+    @staticmethod
+    def _build_prompt(problem: str, prefix: str) -> str:
+        # MuSampler와 동일 prompt 포맷 (Qwen2.5 chat template)
+        return (
+            "<|im_start|>system\nYou solve math step by step. "
+            "Number each step on its own line.<|im_end|>\n"
+            f"<|im_start|>user\n{problem}<|im_end|>\n"
+            f"<|im_start|>assistant\n{prefix}"
         )
 
-    def _on_response(self, ch, method, properties, body):
-        self._responses[properties.correlation_id] = body
-
-    def _call(self, op: str, payload: dict) -> dict:
-        import pika
-
-        with self._lock:
-            self._ensure_connected()
-            cid = str(uuid.uuid4())
-            req = {"op": op, **payload}
-            self._channel.basic_publish(
-                exchange="",
-                routing_key=self.cfg.request_queue,
-                properties=pika.BasicProperties(
-                    reply_to=self._reply_queue,
-                    correlation_id=cid,
-                    content_type="application/json",
-                ),
-                body=json.dumps(req).encode("utf-8"),
+    def _call_completions(self, prompt: str, n: int) -> list[str]:
+        """vLLM OpenAI /v1/completions 호출 — n개 alternative 생성."""
+        client = self._get_client()
+        payload = {
+            "model": self.cfg.model_id,
+            "prompt": prompt,
+            "n": n,
+            "temperature": self.cfg.temperature,
+            "top_p": self.cfg.top_p,
+            "max_tokens": self.cfg.max_new_tokens,
+            "stop": list(self.cfg.step_stop),
+        }
+        resp = client.post(f"{self._endpoint}/v1/completions", json=payload)
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"μ HTTP {resp.status_code}: {resp.text[:200]}"
             )
-
-            elapsed = 0.0
-            poll = 0.05
-            while cid not in self._responses:
-                self._conn.process_data_events(time_limit=poll)
-                elapsed += poll
-                if elapsed >= self.cfg.rpc_timeout:
-                    raise TimeoutError(
-                        f"μ RPC timeout ({self.cfg.rpc_timeout}s) for op={op}"
-                    )
-
-            data = json.loads(self._responses.pop(cid))
-
-        if "error" in data:
-            raise RuntimeError(f"μ worker error: {data['error']}")
-        return data
+        data = resp.json()
+        # OpenAI 포맷: {"choices": [{"text": "...", "index": 0}, ...]}
+        return [c["text"].strip() for c in data["choices"]]
 
     # ------------------------------------------------------------------ api
     def sample_step(self, problem: str, prefix: str) -> str:
         return self.sample_step_batch(problem, prefix, n=1)[0]
 
     def sample_step_batch(self, problem: str, prefix: str, n: int) -> list[str]:
-        data = self._call(
-            "sample",
-            {
-                "problem": problem,
-                "prefix": prefix,
-                "n": n,
-                "temperature": self.cfg.temperature,
-                "top_p": self.cfg.top_p,
-                "max_new_tokens": self.cfg.max_new_tokens,
-            },
-        )
-        return list(data["steps"])
+        prompt = self._build_prompt(problem, prefix)
+        return self._call_completions(prompt, n=n)
 
+    # ------------------------------------------------------------------ admin
     def health(self) -> dict:
-        return self._call("health", {})
+        """vLLM은 /health 가 200/empty 반환."""
+        client = self._get_client()
+        resp = client.get(f"{self._endpoint}/health")
+        return {"ok": resp.status_code == 200, "model_id": self.cfg.model_id}
 
     def close(self):
-        if self._conn is not None:
+        if self._client is not None:
             try:
-                self._conn.close()
+                self._client.close()
             finally:
-                self._conn = None
-                self._channel = None
-                self._reply_queue = None
+                self._client = None

@@ -223,6 +223,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b3/58/58426405b68555a12364533b1426e7f3ccf59ce6fd7754b1dabb8c7de44a/autoawq-0.2.9.tar.gz", hash = "sha256:f3397687118c7d23c769de0de05ff1dca8950a2644acbe1b6eb1399c691fe7ee", size = 74313, upload-time = "2025-05-11T09:02:26.341Z" }
 
 [[package]]
+name = "bitsandbytes"
+version = "0.49.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "torch", version = "2.5.1", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'" },
+    { name = "torch", version = "2.5.1+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "platform_machine != 'aarch64' or platform_python_implementation != 'CPython' or sys_platform != 'linux'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d8/7d/f1fe0992334b18cd8494f89aeec1dcc674635584fcd9f115784fea3a1d05/bitsandbytes-0.49.2-py3-none-macosx_14_0_arm64.whl", hash = "sha256:87be5975edeac5396d699ecbc39dfc47cf2c026daaf2d5852a94368611a6823f", size = 131940, upload-time = "2026-02-16T21:26:04.572Z" },
+    { url = "https://files.pythonhosted.org/packages/29/71/acff7af06c818664aa87ff73e17a52c7788ad746b72aea09d3cb8e424348/bitsandbytes-0.49.2-py3-none-manylinux_2_24_aarch64.whl", hash = "sha256:2fc0830c5f7169be36e60e11f2be067c8f812dfcb829801a8703735842450750", size = 31442815, upload-time = "2026-02-16T21:26:06.783Z" },
+    { url = "https://files.pythonhosted.org/packages/19/57/3443d6f183436fbdaf5000aac332c4d5ddb056665d459244a5608e98ae92/bitsandbytes-0.49.2-py3-none-manylinux_2_24_x86_64.whl", hash = "sha256:54b771f06e1a3c73af5c7f16ccf0fc23a846052813d4b008d10cb6e017dd1c8c", size = 60651714, upload-time = "2026-02-16T21:26:11.579Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/d4/501655842ad6771fb077f576d78cbedb5445d15b1c3c91343ed58ca46f0e/bitsandbytes-0.49.2-py3-none-win_amd64.whl", hash = "sha256:2e0ddd09cd778155388023cbe81f00afbb7c000c214caef3ce83386e7144df7d", size = 55372289, upload-time = "2026-02-16T21:26:16.267Z" },
+]
+
+[[package]]
 name = "blake3"
 version = "1.0.8"
 source = { registry = "https://pypi.org/simple" }
@@ -1842,9 +1859,9 @@ source = { virtual = "." }
 dependencies = [
     { name = "accelerate" },
     { name = "datasets" },
+    { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "numpy" },
-    { name = "pika" },
     { name = "pyyaml" },
     { name = "safetensors" },
     { name = "torch", version = "2.5.1", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'" },
@@ -1861,12 +1878,17 @@ awq = [
     { name = "autoawq" },
 ]
 gpu = [
+    { name = "bitsandbytes" },
     { name = "hydra-core" },
     { name = "math-verify" },
     { name = "peft" },
     { name = "trl" },
     { name = "vllm" },
     { name = "wandb" },
+]
+serve = [
+    { name = "fastapi" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.dev-dependencies]
@@ -1879,13 +1901,15 @@ dev = [
 requires-dist = [
     { name = "accelerate", specifier = ">=1.0" },
     { name = "autoawq", marker = "extra == 'awq'", specifier = ">=0.2.7" },
+    { name = "bitsandbytes", marker = "extra == 'gpu'", specifier = ">=0.43" },
     { name = "datasets", specifier = ">=2.20" },
+    { name = "fastapi", marker = "extra == 'serve'", specifier = ">=0.110" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "huggingface-hub", specifier = ">=0.24" },
     { name = "hydra-core", marker = "extra == 'gpu'", specifier = ">=1.3" },
     { name = "math-verify", marker = "extra == 'gpu'", specifier = ">=0.5" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "peft", marker = "extra == 'gpu'", specifier = ">=0.14" },
-    { name = "pika", specifier = ">=1.3" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "safetensors", specifier = ">=0.4" },
     { name = "torch", specifier = "==2.5.1", index = "https://download.pytorch.org/whl/cu124" },
@@ -1893,10 +1917,11 @@ requires-dist = [
     { name = "torchvision", specifier = "==0.20.1", index = "https://download.pytorch.org/whl/cu124" },
     { name = "transformers", specifier = ">=4.45,<4.50" },
     { name = "trl", marker = "extra == 'gpu'", specifier = ">=0.13,<0.16" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'serve'", specifier = ">=0.27" },
     { name = "vllm", marker = "extra == 'gpu'", specifier = ">=0.7.0,<0.8" },
     { name = "wandb", marker = "extra == 'gpu'", specifier = ">=0.18" },
 ]
-provides-extras = ["gpu", "awq"]
+provides-extras = ["gpu", "awq", "serve"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1924,15 +1949,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/86/cf/037f1e3d5186496c05513a6754639e2dab3038a05f384284d49a9bd06a2d/peft-0.19.1.tar.gz", hash = "sha256:0d97542fe96dcdaa20d3b81c06f26f988618f416a73544ab23c3618ccb674a40", size = 763738, upload-time = "2026-04-16T15:46:45.105Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e8/b6/f54d676ed93cc2dd2234c3b172ea9c8c3d7d29361e66b1b23dec57a67465/peft-0.19.1-py3-none-any.whl", hash = "sha256:2113f72a81621b5913ef28f9022204c742df111890c5f49d812716a4a301e356", size = 680692, upload-time = "2026-04-16T15:46:42.886Z" },
-]
-
-[[package]]
-name = "pika"
-version = "1.4.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4b/15/b6a706f1e886335aedc1e21d23913fe1a0fdaadd597d7721b26f11fe306a/pika-1.4.0.tar.gz", hash = "sha256:84aa6d0cf60bbdb79d5780544a4a4e1799392760127bf9de2a03d3c3b92f5f1a", size = 154264, upload-time = "2026-05-06T18:04:32.569Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/dd/07/b7269c5367995648897a40ae37054780fc68b71afcc51c169a739c653d4b/pika-1.4.0-py3-none-any.whl", hash = "sha256:937d8576f92a1ce3673d442161fefef614ac557583e10b9d84c14a6e228ed6a7", size = 164964, upload-time = "2026-05-06T18:04:31.343Z" },
 ]
 
 [[package]]

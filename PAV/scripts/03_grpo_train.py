@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.prm import load_prm
-from src.rollout.mu_sampler import build_mu_from_policy_yaml
+from src.rollout.mu_sampler import SharedHFMuSampler, build_mu_from_policy_yaml
 from src.train.callbacks import PAVMonitorCallback
 from src.train.grpo_trainer import build_grpo_trainer, load_rl_config
 from src.train.policy_data import build_policy, build_train_dataset
@@ -60,6 +60,13 @@ def main():
         train_dataset=train_dataset,
         peft_config=peft_config,
     )
+
+    # 1-copy 공유 모드: μ를 trainer의 PEFT 모델에 bind
+    # (disable_adapter() 컨텍스트로 base만 사용 → μ ≠ π 보장, GPU base 가중치는 1 copy만 존재)
+    if isinstance(mu, SharedHFMuSampler):
+        mu.bind(trainer.model, tokenizer=tokenizer)
+        print(f"μ bound to trainer model (1-copy 공유 활성)")
+
     # PAV 통계 + 함정 모니터링
     trainer.add_callback(
         PAVMonitorCallback(

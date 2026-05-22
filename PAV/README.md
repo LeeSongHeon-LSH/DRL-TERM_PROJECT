@@ -1,7 +1,14 @@
 # PAV-RL — 차분 PAV + 분포형 보상 (Phase 0 + Phase 1)
 
-천공 PRM(Skywork-o1-Open-PRM-Qwen-2.5-1.5B)을 활용해 PRM 추가 학습 없이 GRPO+LoRA 학습까지 가는 파이프라인.
-(7B 버전도 [configs/prm.yaml](configs/prm.yaml)의 `model_id` 한 줄 교체로 사용 가능.)
+천공 PRM(Skywork-o1-Open-PRM-Qwen-2.5-1.5B)을 활용해 PRM 추가 학습 없이 GRPO 학습까지 가는 파이프라인.
+**현재 default: π / μ = Qwen2.5-Math-1.5B (Full FT)**, PRM = Skywork 1.5B int8.
+7B + QLoRA로 확장은 yaml 키 변경만으로 가능 ([docs/QUICKSTART.md §6](docs/QUICKSTART.md#6-7b로-확장-옵션) 참고).
+
+> **🚀 빠른 시작 (2 PC 분산)** — [docs/QUICKSTART.md](docs/QUICKSTART.md) 참고.
+> 추론 PC: `docker compose -f docker-compose.inference.yml up -d` /
+> 학습 PC: `.env`에 IP 채우고 `docker compose up -d`
+>
+> 단일 PC도 지원 — yaml에서 `mode: local`로 swap. (이전 RabbitMQ는 제거, 분산은 HTTP transport)
 
 ## 디렉토리
 
@@ -28,7 +35,7 @@ PAV/
 │   ├── 02_phase1_mc.py
 │   ├── 03_grpo_train.py
 │   └── 10_label_steps.py         # MATH500 → sanity 라벨 jsonl
-└── tests/                        # swap / parser / imports (19 tests)
+└── tests/                        # swap / parser / imports
 ```
 
 ## 핵심 설계 — `PAVMethod` Protocol
@@ -61,10 +68,20 @@ uv sync --group dev           # +pytest + ruff
 ## 빠른 검증 (PRM 다운로드 불필요)
 
 ```bash
-uv run --group dev pytest tests/ -v           # 19 passed
+uv run --group dev pytest tests/ -v
 ```
 
-## 실행 순서 (실제 모델 다운로드 후)
+## 실행 — one-shot 런처 (권장)
+
+```bash
+bash run_train.sh                     # 기본: smoke (Phase 0, 50 step)
+bash run_train.sh --mode phase0       # Phase 0 본학습 (differential, ~5k step)
+bash run_train.sh --mode phase1       # Phase 1 본학습 (mc_rollout K=16)
+bash run_train.sh --mode phase1 --k 8 # Phase 1, K 축소로 속도 ↑
+bash run_train.sh --gpu-mem 0.55      # A100 80GB면 0.55 권장
+```
+
+## 실행 순서 (수동, 단계별)
 
 ```bash
 # 사전 — 가중치 다운로드 (HF 캐시 또는 --local-dir 지정)
@@ -88,39 +105,18 @@ uv run python scripts/20_eval_mathnet.py \
     --lora ./outputs/q3_lambda-0.5_K16/checkpoint-5000 --N 64
 ```
 
-## Docker로 띄우기 (가장 간편한 방법)
+## Docker로 띄우기 (단일 PC)
 
-4개 service(`rabbitmq`, `prm-worker`, `mu-worker`, `trainer`)를 단일 [Dockerfile](Dockerfile)로
-빌드 + [docker-compose.yml](docker-compose.yml)로 오케스트레이션. **profiles로 PC별 분리 실행**.
+단일 trainer 컨테이너로 [Dockerfile](Dockerfile) + [docker-compose.yml](docker-compose.yml).
 
-### 사전 (각 GPU PC)
 ```bash
-# 호스트에 NVIDIA Container Toolkit 설치 (한 번만)
+# 호스트에 NVIDIA Container Toolkit 한 번 설치
 # https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
 
-cp .env.example .env       # AMQP_URL / HF_HOME_HOST / HF_TOKEN / WANDB_API_KEY 채움
-docker compose build       # 단일 이미지 한 번 빌드 (모든 GPU service 공통)
-```
-
-### 분산 시 — 각 PC에서 자기 profile만
-```bash
-# 브로커 PC
-docker compose --profile broker  up -d
-
-# PRM 워커 PC들 (RTX 5070 12GB+, 여러 PC 가능)
-docker compose --profile prm     up -d
-
-# μ 워커 PC (16GB+ GPU)
-docker compose --profile mu      up -d
-
-# 본체 (3090) — 학습 시작
-docker compose --profile trainer up -d
+cp .env.example .env       # HF_HOME_HOST / HF_TOKEN / WANDB_API_KEY 채움
+docker compose build
+docker compose up -d
 docker compose logs -f trainer
-```
-
-### 단일 호스트에서 다 띄우기 (테스트용 — 큰 GPU 필요)
-```bash
-docker compose --profile all up -d
 ```
 
 ### 부가 정보
@@ -129,61 +125,104 @@ docker compose --profile all up -d
 - **outputs**: trainer는 `./outputs`에 LoRA 체크포인트 저장 (호스트 bind mount).
 - **shm_size**: trainer는 vLLM 내부 multiprocessing 때문에 8GB 권장 (compose에 이미 설정).
 
-## 분산 구조 (RabbitMQ)
+## 분산 셋업 (2 PC) — 학습 PC ↔ 추론 PC
 
-PRM 1.5B 본체 적재 + 정책 7B LoRA + vLLM colocate를 한 GPU에 다 올리면 빠듯합니다.
-**PRM과 μ를 다른 PC들로 분리**하고 RabbitMQ 큐로 RPC하면 본체에는 학습 정책만 남아 OOM 회피 + 워커 추가/제거가 자유로워집니다.
+큰 모델(π/μ 7B)이나 Full FT를 24 GB GPU 한 장으로 못 돌릴 때 권장.
+**μ + PRM을 다른 PC로 분리**, π trainer만 단독 GPU 사용.
 
-### 1) 브로커 1대에서 — RabbitMQ
-```bash
-docker compose up -d                    # docker-compose.yml 사용
-# Management UI: http://<broker-host>:15672  (id/pw: guest/guest)
+```
+┌────────────────────────────┐         ┌────────────────────────────┐
+│ 학습 PC (3090)             │   LAN   │ 추론 PC (3090 Ti)          │
+│  docker-compose.yml        │ ◄────► │  docker-compose.inference  │
+│   └ trainer container      │         │   ├ μ vLLM server  :8001   │
+│                            │         │   └ PRM FastAPI    :8002   │
+└────────────────────────────┘         └────────────────────────────┘
 ```
 
-### 2) 보상모델 PC들에서 (각 PC, 동일 명령)
+### 추론 PC 셋업
+
 ```bash
-uv sync --extra gpu
-
-# PRM 워커 (RTX 5070 12GB+ — 같은 큐를 listen하는 워커 N개 동시 가능)
-uv run python scripts/serve_prm.py \
-    --config configs/prm.yaml \
-    --amqp-url amqp://guest:guest@<broker-host>:5672/ \
-    --queue prm.requests
-
-# μ 워커 (16GB+ — μ는 7B base)
-uv run python scripts/serve_mu.py \
-    --config configs/policy.yaml \
-    --amqp-url amqp://guest:guest@<broker-host>:5672/ \
-    --queue mu.requests
+cp .env.inference.example .env
+# 필요시 vi .env로 HF_HOME_HOST 등 설정
+docker compose -f docker-compose.inference.yml build
+docker compose -f docker-compose.inference.yml up -d
+docker compose -f docker-compose.inference.yml logs -f
 ```
 
-### 3) 본체 (3090) — config 수정 후 학습
+엔드포인트 확인:
+```bash
+curl http://localhost:8002/health           # PRM
+curl http://localhost:8001/v1/models        # μ vLLM
+```
+
+### 학습 PC 셋업
+
+```bash
+cp .env.example .env
+# .env에서 PRM_ENDPOINT / MU_ENDPOINT를 추론 PC IP로:
+#   PRM_ENDPOINT=http://192.168.1.10:8002
+#   MU_ENDPOINT =http://192.168.1.10:8001
+
+docker compose build
+docker compose up -d
+docker compose logs -f
+```
+
+또는 docker 없이 직접:
+```bash
+PRM_ENDPOINT=http://192.168.1.10:8002 \
+MU_ENDPOINT=http://192.168.1.10:8001 \
+  bash run_train.sh --mode phase1
+```
+
+### 분산 모드 yaml 키
+
+학습 PC의 [configs/prm.yaml](configs/prm.yaml):
 ```yaml
-# configs/prm.yaml
 mode: remote
-amqp_url: amqp://guest:guest@<broker-host>:5672/
-request_queue: prm.requests
-rpc_timeout: 120
+remote:
+  endpoint: http://localhost:8002   # PRM_ENDPOINT 환경변수로 override 가능
+  timeout: 120
+```
 
-# configs/policy.yaml (mu: 섹션)
+학습 PC의 [configs/policy.yaml](configs/policy.yaml) `mu:` 섹션:
+```yaml
 mu:
   mode: remote
-  amqp_url: amqp://guest:guest@<broker-host>:5672/
-  request_queue: mu.requests
-  rpc_timeout: 180
+  remote:
+    endpoint: http://localhost:8001   # MU_ENDPOINT 환경변수로 override 가능
+    timeout: 180
 ```
-이후 `scripts/03_grpo_train.py`는 그대로 실행 — `load_prm` / `build_mu_from_policy_yaml`이
-`mode`에 따라 `RemotePRM` / `RemoteMuSampler`를 자동 반환합니다 (모두 표준 AMQP RPC: reply_to + correlation_id).
 
-### 본체 VRAM 추정 (3090 24GB, PRM/μ remote)
+### 분산 VRAM 예측 (1.5B Full FT default)
+
+| PC | 구성 | VRAM | 마진 (24 GB) |
+|---|---|---:|---:|
+| **학습 PC (3090) ⭐** | **π 1.5B Full FT + 8bit Adam + vLLM colocate(0.20)** | **~17 GB** | **7 GB ✅** |
+| **추론 PC (3090 Ti) ⭐** | **μ 1.5B (gpu_mem=0.25) + PRM 1.5B int8** | **~8 GB** | **16 GB ✅** |
+| 학습 PC (7B 옵션) | π 7B + 4bit QLoRA + LoRA + vLLM colocate(0.20) | ~13 GB | 11 GB ✅ |
+| 추론 PC (7B 옵션) | μ 7B (gpu_mem=0.65) + PRM 1.5B int8 | ~17 GB | 7 GB ✅ |
+
+### 네트워크 부하
+
+GRPO 1 step당 PC 간 트래픽 ~6 MB (PRM/μ RPC). **100 Mbps도 충분** (step당 ~0.5 s 오버헤드, 학습 1 step 30–60 s 대비 1–2%).
+weight broadcast는 0 — π는 학습 PC 안에서 trainer + vLLM이 weight 공유.
+
+## 단일 PC VRAM 추정 (3090 24GB)
+
 | 컴포넌트 | VRAM |
 |---|---|
 | 학습 π 7B + LoRA + Adam states | ~14GB |
 | vLLM colocate (rollout, gpu_mem_util=0.30) | ~7~9GB |
-| PRM / μ | 0 (다른 PC) |
-| **합계** | **~22GB** ✅ |
+| PRM (Skywork 1.5B, fp16) | ~3GB |
+| μ (Qwen2.5-Math-7B, bf16) | ~14GB |
 
-`configs/rl_q3.yaml`의 `vllm.gpu_memory_utilization`을 0.30으로 이미 설정해 둠.
+→ Phase 1 K=16 + π/μ/PRM 동시 적재는 24GB 한 장으로 빡빡. 다음 중 선택:
+- 정책을 1.5B로 다운그레이드해 모두 한 GPU에 올림
+- Phase 0(`pav.method: differential`)만 학습 — μ 불필요
+- `vllm.gpu_memory_utilization`을 더 낮추거나 K를 줄여(예: K=4) 메모리 절감
+
+A100 80GB / H100 80GB에서는 모두 같이 적재 가능 (`--gpu-mem 0.55` 권장).
 
 ## 데이터셋
 
@@ -223,4 +262,8 @@ mu:
 | G2 | Q3/Q4가 pass@256 +3%p **또는** entropy decay 50% 완화 |
 | G3 | A.mean only vs A.mean+std ablation 유의차 |
 
-자세한 실행 계획은 `구현 계획 — 차분 PAV + 분포형 보상 (Phase 0).md` 참고.
+## 추가 문서
+
+- [docs/IMPLEMENTATION_REPORT.md](docs/IMPLEMENTATION_REPORT.md) — 구현 결정 / 모듈 책임 / 검증 게이트 매핑
+- [docs/TRAINING_FLOW.md](docs/TRAINING_FLOW.md) — 시스템 구조 / 데이터 흐름 / 실행 단계 다이어그램
+- [docs/구현 계획 — 차분 PAV + 분포형 보상 (Phase 0) 4dc18b40f5ed47259166ff0f0c0f8086.md](docs/구현%20계획%20—%20차분%20PAV%20+%20분포형%20보상%20(Phase%200)%204dc18b40f5ed47259166ff0f0c0f8086.md) — 원본 계획서

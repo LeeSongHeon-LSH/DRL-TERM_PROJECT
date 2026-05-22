@@ -4,18 +4,27 @@ PRM_MODEL (TRL ValueHead 패턴) 기반. 동일 family 7B 변형도 동작.
 실제 가중치 다운로드는 scripts/download_models.py 또는:
     huggingface-cli download Skywork/Skywork-o1-Open-PRM-Qwen-2.5-1.5B
 
-mode="remote"이면 분산된 PRM 서버(scripts/serve_prm.py)에 HTTP로 요청.
+mode:
+    "local"   → 같은 GPU에 PRM 가중치 로드 (PRM 클래스 반환)
+    "remote"  → HTTP로 PRM 서버 호출 (RemotePRM 클래스 반환)
+                서버: scripts/serve_prm_http.py
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from .remote_client import RemotePRM, RemotePRMConfig
 from .score import PRM
+
+
+@dataclass
+class _RemoteSection:
+    endpoint: str = "http://localhost:8002"
+    timeout: float = 120.0
 
 
 @dataclass
@@ -28,11 +37,9 @@ class PRMConfig:
     max_model_len: int = 4096
     step_token: str = "\n"
     batch_size: int = 16
-    # ---- remote (RabbitMQ RPC)
+    # ---- remote (HTTP)
     mode: str = "local"                       # "local" | "remote"
-    amqp_url: str = "amqp://guest:guest@localhost:5672/"
-    request_queue: str = "prm.requests"
-    rpc_timeout: float = 120.0
+    remote: dict = field(default_factory=dict)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "PRMConfig":
@@ -48,6 +55,9 @@ def load_prm(config: str | Path | PRMConfig | dict, **overrides: Any):
     Returns:
         PRM (mode='local')  또는  RemotePRM (mode='remote') —
         둘 다 score / score_batch / score_per_step 인터페이스.
+
+    환경변수 override:
+        PRM_ENDPOINT  → remote.endpoint를 override (mode='remote'일 때만)
     """
     if isinstance(config, (str, Path)):
         cfg = PRMConfig.from_yaml(config)
@@ -63,15 +73,22 @@ def load_prm(config: str | Path | PRMConfig | dict, **overrides: Any):
         setattr(cfg, k, v)
 
     if cfg.mode == "remote":
+        from .remote_client import RemotePRM, RemotePRMConfig
+
+        remote = dict(cfg.remote or {})
+        # 환경변수 override (배포 시 yaml 수정 없이 endpoint 변경)
+        env_endpoint = os.environ.get("PRM_ENDPOINT")
+        if env_endpoint:
+            remote["endpoint"] = env_endpoint
         return RemotePRM(
             RemotePRMConfig(
                 name=cfg.name,
                 model_id=cfg.model_id,
-                amqp_url=cfg.amqp_url,
-                request_queue=cfg.request_queue,
-                rpc_timeout=cfg.rpc_timeout,
-                step_token=cfg.step_token,
+                endpoint=remote.get("endpoint", "http://localhost:8002"),
+                timeout=float(remote.get("timeout", 120.0)),
+                quantization=cfg.quantization,
                 batch_size=cfg.batch_size,
+                step_token=cfg.step_token,
             )
         )
     return PRM(cfg)

@@ -36,6 +36,7 @@ class GRPOSettings:
     warmup_steps: int = 100
     gradient_accumulation: int = 4
     max_completion_length: int = 512
+    optim: str = "adamw_torch"   # "adamw_torch" | "paged_adamw_8bit" | "adamw_bnb_8bit" 등
 
 
 def load_rl_config(path: str | Path) -> dict[str, Any]:
@@ -78,6 +79,7 @@ def build_grpo_trainer(
         max_completion_length=rl_cfg.get("vllm", {}).get(
             "max_new_tokens", g.get("max_completion_length", 512)
         ),
+        optim=g.get("optim", "adamw_torch"),
     )
 
     log_cfg = rl_cfg.get("logging", {})
@@ -93,6 +95,7 @@ def build_grpo_trainer(
         beta=settings.kl_beta,
         epsilon=settings.clip_eps,
         max_completion_length=settings.max_completion_length,
+        optim=settings.optim,
         report_to=["wandb"] if log_cfg.get("wandb_project") else [],
         run_name=log_cfg.get("wandb_run_name"),
         logging_steps=log_cfg.get("log_every", 10),

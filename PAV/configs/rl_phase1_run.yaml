@@ -1,0 +1,43 @@
+algorithm: grpo
+defaults:
+  prm: prm.yaml
+  policy: policy.yaml
+pav:
+  method: mc_rollout
+  K: 4
+reward:
+  alpha: 3.0
+  mode: Q3
+  lam: -0.5
+  cvar_alpha: 0.2
+grpo:
+  group_size: 8
+  kl_beta: 0.04
+  clip_eps: 0.2
+  learning_rate: 5.0e-06
+  total_steps: 5
+  warmup_steps: 5
+  gradient_accumulation: 1
+data:
+  train:
+  - dataset: gsm8k
+    split: train
+  eval:
+  - dataset: mathnet
+    split: train
+    filters:
+      language: English
+      text_only: true
+      require_final_answer: true
+    subset: 200
+vllm:
+  enable_prefix_caching: true
+  colocate: false
+  gpu_memory_utilization: 0.35
+  max_new_tokens: 512
+logging:
+  wandb_project: null
+  wandb_run_name: phase1_K4_s5
+  log_every: 5
+  eval_every: 500
+  dump_samples_every: 1000

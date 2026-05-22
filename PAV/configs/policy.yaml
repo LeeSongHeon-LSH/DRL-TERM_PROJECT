@@ -1,11 +1,24 @@
-# 정책 π = Qwen2.5-Math-7B-Instruct + LoRA (학습 대상)
-# Prover μ = 동일 모델의 frozen base — μ ≠ π 보장
+# 정책 π = Qwen2.5-Math-1.5B-Instruct (Full FT)
+# Prover μ = Qwen2.5-Math-1.5B-Instruct frozen base — π와 같은 base, LoRA 없이 Full FT
+# 학습 중인 π와 μ의 weight가 drift되므로 μ ≠ π 자연스럽게 보장 (μ는 학습 시작 시점 가중치).
+#
+# VRAM (3090 24 GB 단일 / 2 PC 분산):
+#   학습 PC: π 1.5B Full FT + 8bit Adam + vLLM colocate(0.20)  ≈ 18 GB  마진 6 GB ✅
+#   추론 PC: μ 1.5B vLLM(gpu_mem 0.25) + PRM 1.5B int8         ≈  8 GB  마진 16 GB ✅
 name: qwen25-math-1_5b-instruct
 model_id: Qwen/Qwen2.5-Math-1.5B-Instruct
 dtype: bfloat16
 device: cuda
 
-# LoRA — "LoRA Without Regret" 권고치
+# 학습 측 (HF transformers) base 가중치 양자화. "none" | "4bit" (QLoRA) | "8bit".
+# Full FT은 "none". 7B로 모델 키울 때만 "4bit" 권장.
+quantization: none
+
+# Full FT 모드 — true면 peft_config=None으로 trainer에 전달 (모든 weight 학습).
+# false면 아래 lora: 섹션의 LoraConfig 사용 (LoRA / QLoRA).
+full_ft: true
+
+# LoRA — full_ft=false일 때만 의미. "LoRA Without Regret" 권고치.
 lora:
   r: 64
   alpha: 128                # = 2r
@@ -21,21 +34,29 @@ generation:
     - "\n\n\n"
 
 # Prover μ — base model, frozen, MC rollout에서 single-step sampling용
-# mode: "local"  → 본체 GPU에 vLLM 인스턴스 (gpu_memory_utilization 비율만큼 점유)
-# mode: "remote" → 워커들이 amqp_url의 request_queue를 consume (RemoteMuSampler)
+# mode:
+#   "vllm"   → 같은 GPU에 별도 vLLM 인스턴스 (base 추가 copy)
+#   "shared" → trainer PEFT 모델 재활용, disable_adapter()로 base만 사용
+#              ⚠ Full FT(LoRA 없음)에서는 disable_adapter()가 의미 없음 — 불가
+#   "remote" → 다른 PC의 vLLM OpenAI API 호출 (RemoteMuSampler) ⭐ Full FT + 분산 시
+#              서버: `python -m vllm.entrypoints.openai.api_server ...`
+#              환경변수 MU_ENDPOINT로 endpoint override 가능
 mu:
-  model_id: Qwen/Qwen2.5-Math-7B-Instruct   # frozen base (LoRA 미적용)
+  mode: remote
+  model_id: Qwen/Qwen2.5-Math-1.5B-Instruct
   temperature: 1.0
   top_p: 0.95
   max_new_tokens: 256       # single step만 — step boundary에서 stop
   step_stop:
     - "\n\n"
-  # μ 단독 (Stage 5/6) 또는 trainer는 다른 GPU일 때: 0.75 권장
-  # PRM과 동거 (Stage 7) 또는 trainer와 동거 시: 0.50으로 낮춤
-  gpu_memory_utilization: 0.75
-  max_model_len: 4096            # KV cache 메모리 제한 (default 32k는 24GB 카드에서 OOM)
+
+  # ---- "vllm" / "shared" 전용 (local 적재 시만 의미)
+  gpu_memory_utilization: 0.25
+  max_model_len: 4096
   dtype: bfloat16
-  mode: local
-  amqp_url: amqp://guest:guest@localhost:5672/
-  request_queue: mu.requests
-  rpc_timeout: 180
+  cpu_offload_gb: 0
+
+  # ---- "remote" 전용 (추론 PC 주소)
+  remote:
+    endpoint: http://localhost:8001
+    timeout: 180

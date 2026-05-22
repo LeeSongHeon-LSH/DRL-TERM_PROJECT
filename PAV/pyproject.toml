@@ -18,7 +18,7 @@ dependencies = [
     "accelerate>=1.0",                # PRM_MODEL의 PartialState 의존
     "huggingface-hub>=0.24",          # PRM_MODEL의 hf_hub_download 의존
     "safetensors>=0.4",
-    "pika>=1.3",                      # RabbitMQ RPC (RemotePRM / RemoteMuSampler / 워커)
+    "httpx>=0.27",                    # RemotePRM / RemoteMuSampler HTTP 클라이언트
 ]
 
 [project.optional-dependencies]
@@ -27,13 +27,18 @@ gpu = [
     "vllm>=0.7.0,<0.8",
     "trl>=0.13,<0.16",                # GRPOConfig + vllm_mode='colocate' + peft_config 지원
     "peft>=0.14",
+    "bitsandbytes>=0.43",             # LLM.int8 (PRM/policy 8bit 양자화)
     "wandb>=0.18",
     "math-verify>=0.5",
     "hydra-core>=1.3",
 ]
 # autoawq는 별도 설치 — torch 2.5 호환은 0.2.7+ (GPU만 의미)
 awq = ["autoawq>=0.2.7"]
-# (이전 [serve] HTTP 스택은 제거 — 분산 통신은 RabbitMQ만 사용)
+# 추론 PC의 PRM HTTP 서버 (scripts/serve_prm_http.py) — vLLM은 OpenAI API 내장
+serve = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+]
 
 [dependency-groups]
 dev = [

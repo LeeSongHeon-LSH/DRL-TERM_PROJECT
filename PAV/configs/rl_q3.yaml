@@ -23,10 +23,13 @@ grpo:
   group_size: 8             # 같은 문제에서 8 rollout
   kl_beta: 0.04             # anti-hacking
   clip_eps: 0.2
-  learning_rate: 5.0e-6     # FullFT의 ~10×
+  learning_rate: 5.0e-7     # 1.5B Full FT 기준 (LoRA였다면 5e-6 — 10× 큼)
   total_steps: 50              # Stage 8 smoke: 50 step에서 LoRA weight 변화 확인 (실제 학습은 5000+)
   warmup_steps: 5
   gradient_accumulation: 1
+  # optimizer 선택. 24 GB GPU + FullFT면 "paged_adamw_8bit" 필수.
+  # LoRA / 4bit QLoRA에서는 "adamw_torch" (default) 또는 "paged_adamw_8bit" 둘 다 OK.
+  optim: paged_adamw_8bit
 
 # 데이터
 # 학습 = GSM8K (단일), 검증/최종평가 = MathNet (Olympiad-level, English text-only)
@@ -44,12 +47,14 @@ data:
       subset: 200             # 처음 200문제만 (필터 후)
 
 # vLLM rollout (학습 정책 π의 colocate rollout)
-# 3090 24GB 단일 환경 + PRM/μ remote 가정 시 0.30 권장 (학습 forward + LoRA optim 여유 확보)
-# H100 80GB ×2 환경이면 0.55 그대로
+# 1.5B Full FT + 분산(μ/PRM remote) 기준:
+#   colocate: true + gpu_memory_utilization: 0.20 → π vLLM 4.8 GB, trainer 13 GB, 합 ~18 GB ✅
+# 7B로 확장 시 colocate vLLM의 15GB duplicate를 감당 못 함 → colocate: false 강제.
+# 80GB GPU면 colocate: true + gpu_memory_utilization: 0.35 권장.
 vllm:
   enable_prefix_caching: true
   colocate: true
-  gpu_memory_utilization: 0.30
+  gpu_memory_utilization: 0.20
   max_new_tokens: 512
 
 # 로깅

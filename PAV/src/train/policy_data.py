@@ -22,6 +22,14 @@ def build_policy(policy_yaml: str | Path, *, gradient_checkpointing: bool = True
     """AutoModelForCausalLM + AutoTokenizer (padding_side='left') 로드.
 
     LoraConfig는 별도 반환 — TRL GRPOTrainer가 peft_config로 wrap.
+
+    yaml의 `quantization` 키:
+      - "none"        : 일반 LoRA (base는 bf16/fp16)  또는 Full FT (full_ft=true)
+      - "4bit"|"nf4"  : QLoRA — bnb 4-bit NF4 + double-quant + bf16 compute + peft prepare
+      - "8bit"        : LLM.int8() + peft prepare
+
+    yaml의 `full_ft: true`이면 peft_config로 None 반환 → trainer는 모든 weight 학습.
+    Full FT는 quantization="none" 권장 (bnb k-bit + Full FT는 의미 모순).
     """
     from peft import LoraConfig
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -41,14 +49,48 @@ def build_policy(policy_yaml: str | Path, *, gradient_checkpointing: bool = True
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg["model_id"],
-        torch_dtype=dtype,
-        trust_remote_code=True,
-    )
-    if gradient_checkpointing:
+    quantization = (cfg.get("quantization") or "none").lower()
+    load_kwargs: dict = {"trust_remote_code": True}
+    if quantization in ("4bit", "nf4", "qlora"):
+        from transformers import BitsAndBytesConfig
+
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=dtype,           # 보통 bf16
+            bnb_4bit_use_double_quant=True,         # 추가 0.4 GB 절감
+        )
+        load_kwargs["device_map"] = "auto"
+    elif quantization == "8bit":
+        from transformers import BitsAndBytesConfig
+
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+        load_kwargs["device_map"] = "auto"
+        load_kwargs["torch_dtype"] = torch.float16   # bnb 8bit는 fp16 compute가 안정
+    else:
+        load_kwargs["torch_dtype"] = dtype
+
+    model = AutoModelForCausalLM.from_pretrained(cfg["model_id"], **load_kwargs)
+
+    if quantization in ("4bit", "nf4", "qlora", "8bit"):
+        from peft import prepare_model_for_kbit_training
+
+        # k-bit base 위에 LoRA를 얹기 전 grad 흐름 / cache 비활성 설정
+        model = prepare_model_for_kbit_training(
+            model, use_gradient_checkpointing=gradient_checkpointing
+        )
+    elif gradient_checkpointing:
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
+
+    # Full FT 모드 — peft_config=None 반환. trainer가 모든 weight 학습.
+    if cfg.get("full_ft", False):
+        if quantization != "none":
+            log.warning(
+                f"full_ft=true와 quantization={quantization!r}은 함께 쓸 수 없음. "
+                f"Full FT는 quantization='none'에서만 의미 있음."
+            )
+        return model, tokenizer, None
 
     lora_cfg = cfg.get("lora", {})
     target_modules = lora_cfg.get("target_modules", "all-linear")

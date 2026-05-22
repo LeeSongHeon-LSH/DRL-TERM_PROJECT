@@ -1,11 +1,11 @@
 # Skywork-o1-Open-PRM-Qwen-2.5-1.5B (천공 PRM, 경량 default)
-# step-level PRM, Qwen2.5 family. fp16 기본 (~2.9GB).
+# step-level PRM, Qwen2.5 family. fp16 기본 (~2.9GB → int8로 ~1.7GB).
 # 7B 변형: Skywork/Skywork-o1-Open-PRM-Qwen-2.5-7B (~14GB).
 name: skywork-o1-prm
 model_id: Skywork/Skywork-o1-Open-PRM-Qwen-2.5-1.5B
 
 # 양자화 / 추론
-quantization: none           # "none" | "awq"
+quantization: 8bit           # "none" | "8bit" (bitsandbytes LLM.int8) | "awq"
 dtype: float16
 device: cuda
 max_model_len: 4096
@@ -14,10 +14,12 @@ max_model_len: 4096
 step_token: "\n"
 batch_size: 16
 
-# ---- 분산 모드 (RabbitMQ RPC)
-# mode: "local"   → 같은 GPU에 PRM 가중치 로드
-# mode: "remote"  → 워커들이 amqp_url의 request_queue를 consume, 본체가 RemotePRM으로 publish
-mode: local
-amqp_url: amqp://guest:guest@localhost:5672/
-request_queue: prm.requests
-rpc_timeout: 120
+# ---- 분산 모드
+# mode: "local"   → 같은 GPU에 PRM 가중치 로드 (PRM 클래스)
+# mode: "remote"  → HTTP로 PRM 서버 호출 (RemotePRM 클래스)
+#                   서버: scripts/serve_prm_http.py (FastAPI + uvicorn)
+#                   환경변수 PRM_ENDPOINT로 endpoint override 가능
+mode: remote
+remote:
+  endpoint: http://localhost:8002
+  timeout: 120

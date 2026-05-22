@@ -1,119 +1,49 @@
-# 4개 service + profiles로 분산 배포 / 단일 호스트 테스트 둘 다 지원.
+# 학습 PC (3090 24 GB) — π trainer 1개 컨테이너.
+# PRM / μ는 추론 PC에서 별도 docker-compose.inference.yml로 띄움.
 #
 # === 사용 ===
-# 한 번 빌드:
+#   cp .env.example .env
+#   # .env에서 PRM_ENDPOINT / MU_ENDPOINT를 추론 PC IP로 설정
 #   docker compose build
+#   docker compose up -d
+#   docker compose logs -f
 #
-# 분산 시 (각 PC에서 자기 profile만):
-#   브로커 PC:    docker compose --profile broker  up -d
-#   PRM 워커 PC:  docker compose --profile prm     up -d
-#   μ  워커 PC:  docker compose --profile mu      up -d
-#   본체:         docker compose --profile trainer up -d
+# === VRAM 예측 (24 GB GPU, 1.5B Full FT, μ/PRM은 remote) — 현재 default ===
+#   π 1.5B base (bf16)              ~3.1 GB
+#   gradients (bf16)                ~3.1 GB
+#   8-bit Adam states               ~3.1 GB
+#   activations (grad-ckpt, group=8) ~2–3 GB
+#   vLLM colocate (gpu_mem=0.20)    ~4.8 GB
+#   합계                              ~17 GB / 마진 ~7 GB ✅
 #
-# 단일 호스트 모든 것 한꺼번에:
-#   docker compose --profile all up -d
-#
-# === 환경 ===
-# .env (또는 export) 로 다음을 정의 권장:
-#   AMQP_URL=amqp://guest:guest@<broker-host>:5672/
-#   HF_HOME_HOST=/path/on/host/.hf_cache    # 호스트의 HF 캐시 경로 (모델 영속화)
-#   HF_TOKEN=...                             # public이라 선택, rate limit 회피용
-#   WANDB_API_KEY=...                        # trainer 전용
-
-x-gpu: &gpu
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            count: 1
-            capabilities: [gpu]
-
-x-common-env: &common-env
-  AMQP_URL: ${AMQP_URL:-amqp://guest:guest@rabbitmq:5672/}
-  HF_HOME: /cache/huggingface
-  HF_TOKEN: ${HF_TOKEN:-}
-  # hf_transfer 미설치 시 Dockerfile의 HF_HUB_ENABLE_HF_TRANSFER=1을 override
-  HF_HUB_ENABLE_HF_TRANSFER: "0"
-
-x-volumes: &common-volumes
-  - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
-  # 코드 hot-reload — 이미지 재빌드 없이 src/scripts 수정 즉시 반영 (개발/디버깅 용)
-  - ./src:/app/src:ro
-  - ./scripts:/app/scripts:ro
-  - ./configs:/app/configs:ro
+# 7B QLoRA로 가려면 configs/policy.yaml에서:
+#   model_id: Qwen/Qwen2.5-Math-7B-Instruct, quantization: 4bit, full_ft: false
+#   rl_q3.yaml: learning_rate 5e-6 (LoRA 스케일), vllm.colocate: false
 
 services:
-  # ---------------------------- ① RabbitMQ broker ----------------------------
-  rabbitmq:
-    image: rabbitmq:3.13-management
-    container_name: pav-rabbitmq
-    restart: unless-stopped
-    profiles: ["broker", "all"]
-    ports:
-      - "5672:5672"      # AMQP
-      - "15672:15672"    # Management UI
-    environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
-    volumes:
-      - rabbit_data:/var/lib/rabbitmq
-
-  # ---------------------------- ② PRM 워커 (RTX 5070급) ----------------------------
-  prm-worker:
-    build: .
-    image: pav-rl:latest
-    container_name: pav-prm-worker
-    restart: unless-stopped
-    profiles: ["prm", "all"]
-    <<: *gpu
-    environment:
-      <<: *common-env
-    volumes: *common-volumes
-    command: >
-      python scripts/serve_prm.py
-      --config configs/prm.yaml
-      --amqp-url ${AMQP_URL:-amqp://guest:guest@rabbitmq:5672/}
-      --queue prm.requests
-      --prefetch 1
-    # 단일 호스트 테스트 시 broker 대기
-    depends_on:
-      - rabbitmq
-
-  # ---------------------------- ③ μ 워커 (16GB+ GPU) ----------------------------
-  mu-worker:
-    build: .
-    image: pav-rl:latest
-    container_name: pav-mu-worker
-    restart: unless-stopped
-    profiles: ["mu", "all"]
-    <<: *gpu
-    environment:
-      <<: *common-env
-    volumes: *common-volumes
-    command: >
-      python scripts/serve_mu.py
-      --config configs/policy.yaml
-      --amqp-url ${AMQP_URL:-amqp://guest:guest@rabbitmq:5672/}
-      --queue mu.requests
-      --prefetch 1
-    depends_on:
-      - rabbitmq
-
-  # ---------------------------- ④ 학습 본체 (3090) ----------------------------
   trainer:
     build: .
     image: pav-rl:latest
     container_name: pav-trainer
-    profiles: ["trainer", "all"]
-    <<: *gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     environment:
-      <<: *common-env
+      HF_HOME: /cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
       WANDB_API_KEY: ${WANDB_API_KEY:-}
+      # 분산: 추론 PC의 PRM / μ 엔드포인트 (yaml의 remote.endpoint 값을 override)
+      PRM_ENDPOINT: ${PRM_ENDPOINT:-http://localhost:8002}
+      MU_ENDPOINT: ${MU_ENDPOINT:-http://localhost:8001}
     volumes:
       - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
       - ./outputs:/app/outputs
-      - ./configs:/app/configs:ro       # config 핫스왑 가능
+      - ./configs:/app/configs:ro
       - ./src:/app/src:ro
       - ./scripts:/app/scripts:ro
     command: >
@@ -121,10 +51,6 @@ services:
       --rl-config configs/rl_q3.yaml
       --prm-config configs/prm.yaml
       --policy-config configs/policy.yaml
-    depends_on:
-      - rabbitmq
-    # IPC: vLLM 내부 multiprocessing 위한 shared memory 충분히 (default 64M는 부족)
     shm_size: "8g"
-
-volumes:
-  rabbit_data:
+    # 추론 PC와 같은 LAN이면 host network로 두면 endpoint 설정이 단순해짐 (선택).
+    # network_mode: host
