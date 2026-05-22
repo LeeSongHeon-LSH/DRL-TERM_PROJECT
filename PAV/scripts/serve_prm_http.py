@@ -28,6 +28,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -35,8 +37,7 @@ from src.prm import load_prm
 
 log = logging.getLogger("prm-http")
 
-app = FastAPI(title="PAV PRM Server", version="1.0")
-_prm = None  # lazy 적재 (start-up 이벤트 또는 첫 호출)
+_prm = None  # lazy 적재 (lifespan startup 또는 명시적 호출)
 
 
 def _ensure_prm():
@@ -51,13 +52,17 @@ def _ensure_prm():
     return _prm
 
 
-@app.on_event("startup")
-def _startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s | %(message)s",
     )
     _ensure_prm()
+    yield
+
+
+app = FastAPI(title="PAV PRM Server", version="1.0", lifespan=lifespan)
 
 
 # ----------------------------------------------------------------- schemas
@@ -152,12 +157,15 @@ def main():
 
     import uvicorn
 
+    # app 객체 직접 전달 — import string("scripts.serve_prm_http:app") 방식은
+    # /app/scripts/가 패키지가 아닐 때 ImportError를 일으킴.
+    # `_startup` hook이 등록되어 있으므로 첫 호출 전에 PRM 적재 (또는 명시적 호출).
+    _ensure_prm()  # CLI 진입 시 사전 적재 (요청 대기 시 timeout 방지)
     uvicorn.run(
-        "scripts.serve_prm_http:app",
+        app,
         host=args.host,
         port=args.port,
         log_level="info",
-        workers=1,  # GPU model이라 단일 worker (멀티는 의미 없음)
     )
 
 
