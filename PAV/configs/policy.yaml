@@ -59,4 +59,4 @@ mu:
   # ---- "remote" 전용 (추론 PC 주소)
   remote:
     endpoint: http://localhost:8001
-    timeout: 180
+    timeout: 600              # K=16 batch generation 안정성 (180→600)

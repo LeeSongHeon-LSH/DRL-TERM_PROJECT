@@ -37,6 +37,10 @@ services:
       HF_TOKEN: ${HF_TOKEN:-}
       HF_HUB_ENABLE_HF_TRANSFER: "0"
       WANDB_API_KEY: ${WANDB_API_KEY:-}
+      # tqdm progress bar 실시간 표시 — docker logs가 pipe라 block-buffered 기본값 회피
+      PYTHONUNBUFFERED: "1"
+      # PyTorch CUDA allocator — expandable_segments로 fragmentation 완화 (24GB 빡빡한 환경 필수)
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
       # 분산: 추론 PC의 PRM / μ 엔드포인트 (yaml의 remote.endpoint 값을 override)
       PRM_ENDPOINT: ${PRM_ENDPOINT:-http://localhost:8002}
       MU_ENDPOINT: ${MU_ENDPOINT:-http://localhost:8001}

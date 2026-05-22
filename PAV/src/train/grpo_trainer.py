@@ -85,6 +85,10 @@ def build_grpo_trainer(
     log_cfg = rl_cfg.get("logging", {})
     output_dir = "./outputs/" + log_cfg.get("wandb_run_name", "pav_run")
 
+    # HF OptimizerNames enum 밖의 값은 placeholder로 대체 → 실제 optimizer는 optimizers 튜플로 주입.
+    _CUSTOM_OPTIMS = {"came"}
+    hf_optim = "adamw_torch" if settings.optim in _CUSTOM_OPTIMS else settings.optim
+
     grpo_cfg_kwargs = dict(
         output_dir=output_dir,
         learning_rate=settings.learning_rate,
@@ -95,7 +99,7 @@ def build_grpo_trainer(
         beta=settings.kl_beta,
         epsilon=settings.clip_eps,
         max_completion_length=settings.max_completion_length,
-        optim=settings.optim,
+        optim=hf_optim,
         report_to=["wandb"] if log_cfg.get("wandb_project") else [],
         run_name=log_cfg.get("wandb_run_name"),
         logging_steps=log_cfg.get("log_every", 10),
@@ -111,6 +115,15 @@ def build_grpo_trainer(
             vllm_mode="colocate",
             vllm_gpu_memory_utilization=vllm_cfg.get("gpu_memory_utilization", 0.55),
         )
+
+    # GaLore 계열 옵티마이저는 optim_target_modules 필수.
+    # HF Trainer의 GaLore 분기는 정규식 substring 매칭 — "all-linear" 키워드는 PEFT 전용이라 미지원.
+    # Qwen2.5 (q_proj/k_proj/v_proj/o_proj/gate_proj/up_proj/down_proj)에 명시적 매칭.
+    if settings.optim.startswith("galore_"):
+        grpo_cfg_kwargs["optim_target_modules"] = [
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+        ]
 
     # TRL 버전마다 GRPOConfig 인자가 다름 (예: epsilon → epsilon_low/epsilon_high).
     # 알 수 없는 인자는 자동 drop.
@@ -135,7 +148,33 @@ def build_grpo_trainer(
     if peft_config is not None:
         trainer_kwargs["peft_config"] = peft_config
 
+    # 비-표준 optimizer (HF Trainer string 매핑 밖) 직접 주입.
+    # peft_config가 None인 Full FT 전제 — LoRA 사용 시 wrap 이후 파라미터로 재생성 필요.
+    custom_opt = _build_custom_optimizer(settings.optim, policy_model, settings.learning_rate)
+    if custom_opt is not None:
+        trainer_kwargs["optimizers"] = (custom_opt, None)   # scheduler는 Trainer가 default 생성
+
     return GRPOTrainer(**trainer_kwargs)
+
+
+def _build_custom_optimizer(optim_name: str, model, lr: float):
+    """HF Trainer가 string으로 매핑 못 하는 optimizer를 직접 생성. 지원 안 하면 None 반환."""
+    if optim_name == "came":
+        try:
+            from came_pytorch import CAME
+        except ImportError as e:
+            raise ImportError(
+                "came-pytorch가 필요합니다. `uv sync --extra gpu`로 설치 후 image rebuild."
+            ) from e
+        log.info(f"CAME optimizer 생성 (lr={lr})")
+        return CAME(
+            model.parameters(),
+            lr=lr,
+            weight_decay=0.0,
+            betas=(0.9, 0.999, 0.9999),
+            eps=(1e-30, 1e-16),
+        )
+    return None
 
 
 # ---------------------------------------------------------------------- adapter

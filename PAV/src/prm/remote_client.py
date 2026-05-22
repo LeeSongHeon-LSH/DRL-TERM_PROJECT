@@ -21,9 +21,9 @@ class RemotePRMConfig:
     name: str = "remote-prm"
     model_id: str = "remote"
     endpoint: str = "http://localhost:8002"
-    timeout: float = 120.0
+    timeout: float = 300.0                # K=16 score_batch가 추론 서버에서 한 번에 처리 → 여유 300초
     quantization: str = "remote"          # 호환용 placeholder
-    batch_size: int = 16
+    batch_size: int = 32                  # 16 → 32 (추론 서버 여유 있음, 한 번에 더 많이)
     step_token: str = "\n"
 
 

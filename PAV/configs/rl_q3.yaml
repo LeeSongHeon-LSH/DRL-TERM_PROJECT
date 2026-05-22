@@ -8,7 +8,7 @@ defaults:
 
 # PAV 추출 — DifferentialPAV ↔ MCRolloutPAV swap은 method 키만 변경
 pav:
-  method: differential      # Stage 8 단일 호스트 smoke: μ 안 씀 (Phase 0)
+  method: mc_rollout        # Phase 1 — μ로 K개 alternative rollout, counterfactual advantage
   K: 16                     # MC rollout 수 (mc_rollout 전용)
 
 # Reward 가공
@@ -20,16 +20,20 @@ reward:
 
 # GRPO
 grpo:
-  group_size: 8             # 같은 문제에서 8 rollout
+  group_size: 4             # 같은 문제에서 4 rollout (CAME으로 옵티마이저 메모리 풍부 → 4 복원, advantage 추정 품질 ↑)
   kl_beta: 0.04             # anti-hacking
   clip_eps: 0.2
   learning_rate: 5.0e-7     # 1.5B Full FT 기준 (LoRA였다면 5e-6 — 10× 큼)
   total_steps: 50              # Stage 8 smoke: 50 step에서 LoRA weight 변화 확인 (실제 학습은 5000+)
   warmup_steps: 5
   gradient_accumulation: 1
-  # optimizer 선택. 24 GB GPU + FullFT면 "paged_adamw_8bit" 필수.
+  # optimizer 선택.
+  # paged_adamw_8bit: step 시 12GB scratch dequantize → 24GB OOM.
+  # came: state 6GB + scratch 누적 → 24GB 한계 fragmentation stall.
+  # adafactor: factored variance, state ~1.5GB, 검증됨. LR 민감.
+  # galore_adamw_8bit_layerwise: gradient low-rank projection + 8bit + layer 단위 → peak 매우 작음. 1.5B Full FT 24GB 최적.
   # LoRA / 4bit QLoRA에서는 "adamw_torch" (default) 또는 "paged_adamw_8bit" 둘 다 OK.
-  optim: paged_adamw_8bit
+  optim: galore_adamw_8bit_layerwise
 
 # 데이터
 # 학습 = GSM8K (단일), 검증/최종평가 = MathNet (Olympiad-level, English text-only)
@@ -53,9 +57,9 @@ data:
 # 80GB GPU면 colocate: true + gpu_memory_utilization: 0.35 권장.
 vllm:
   enable_prefix_caching: true
-  colocate: true
-  gpu_memory_utilization: 0.20
-  max_new_tokens: 512
+  colocate: true                 # GaLore/CAME 메모리 절감으로 vLLM 자리 확보
+  gpu_memory_utilization: 0.30   # 0.20→0.30: vLLM 4.8→7.2GB (학습 PC 9GB 여유 활용, KV cache 1.5배)
+  max_new_tokens: 256            # 학습용 forward seq (GSM8K solution은 보통 200-300 tokens)
 
 # 로깅
 logging:

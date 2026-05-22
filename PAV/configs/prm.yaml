@@ -22,4 +22,5 @@ batch_size: 16
 mode: remote
 remote:
   endpoint: http://localhost:8002
-  timeout: 120
+  timeout: 300              # K=16 score_batch 안정성 (120→300)
+  batch_size: 32            # 추론 서버 여유 활용 (16→32)

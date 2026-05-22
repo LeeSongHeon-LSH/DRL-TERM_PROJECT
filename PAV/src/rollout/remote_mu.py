@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 class RemoteMuConfig:
     endpoint: str = "http://localhost:8001"
     model_id: str = "Qwen/Qwen2.5-Math-7B-Instruct"
-    timeout: float = 180.0
+    timeout: float = 600.0   # K=16 batch generation은 추론 서버에서 ~120-180초 소요 가능 → 여유 600초
     temperature: float = 1.0
     top_p: float = 0.95
     max_new_tokens: int = 256
