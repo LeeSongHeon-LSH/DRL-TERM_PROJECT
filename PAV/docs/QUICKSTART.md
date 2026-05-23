@@ -200,7 +200,89 @@ backward+opt:                                                          └►[ba
 
 ---
 
-## 7. 7B로 확장 (옵션)
+## 7. 학습 logs metrics 해석
+
+매 `logging_steps`마다 docker logs에 출력되는 라인 예시:
+
+```python
+{
+  'loss': 0.0,
+  'grad_norm': 0.0,
+  'learning_rate': 1.67e-07,
+  'rewards/pav_Q3_reward': 1.017,
+  'reward': 1.017,
+  'reward_std': 0.869,
+  'completion_length': 246.8,
+  'kl': 7.96e-06,
+  'epoch': 0.01,
+}
+```
+
+| 필드 | 의미 | 정상 범위 / 해석 |
+|---|---|---|
+| `loss` | GRPO loss (`= − E[A · log π/π_old] + β·KL`) | **거의 0** — GRPO 특성. group-baseline 빼서 평균 0 근처. **학습 신호는 loss가 아닌 reward 추이로 봐야 함** |
+| `grad_norm` | parameter gradient의 L2 norm (clipping 전) | 정상: 0.1 ~ 10. **0.0이면** ① GaLore layerwise는 fused norm을 reporting 안 함 (artifact 가능) ② grad clipping 작동 ③ 진짜 grad 거의 없음 — checkpoint diff로 확인 권장 |
+| `learning_rate` | 현재 step의 LR (cosine schedule 적용 후) | `5e-7` (initial) → `0` (final). `warmup_steps=5`로 step 0~5는 ramp-up, 이후 cosine decay |
+| `rewards/pav_Q3_reward` | PAV (Q3 risk-seeking mode) reward 평균 | `α=3.0, λ=-0.5`로 계산. trajectory 1개당 `Σ_t [PRM(s_t+a_t) − E_K[PRM(s_t+a'_k)]]`의 mode-weighted 합. **값보다는 step별 추이가 중요** |
+| `reward` | reward_funcs 평균 (현재 1개라 `pav_Q3_reward`와 동일) | 동일 |
+| `reward_std` | group_size 내 trajectory들 reward 표준편차 | GRPO advantage 정규화에 사용. **0에 가까우면** trajectory들이 다 비슷 (μ가 다양성 못 만듦 또는 K=16 alternative 비슷) → 학습 신호 약함. 0.5~1.5가 healthy |
+| `completion_length` | 생성된 completion 평균 token 수 | `max_new_tokens=256` 가까이면 truncate 의심 (논리 미완성). 100~250 normal |
+| `kl` | π 와 reference model 사이 KL divergence | `β·KL`이 loss에 추가되어 π가 ref에서 너무 멀리 안 가게 함. **너무 작음 (~1e-5)** = π 거의 안 바뀜 = learning rate 작거나 학습 미미. **너무 큼 (>0.1)** = π가 ref에서 크게 이탈, 안정성 우려 |
+| `epoch` | dataset 한 바퀴 진행률 | 50 step smoke = 0.01~0.03 (dataset 매우 큼). 5000 step 본격 학습 = 1 epoch 근처 |
+
+### 주의해야 할 패턴
+
+- `reward`가 random walk처럼 변동만 하고 trend 없음 → **50 step은 학습 효과 보기 너무 짧음**. 5000+ step 필요
+- `grad_norm = 0.0`이 지속되고 `kl` 매우 작음 → π 실제로 안 바뀜. **checkpoint weight diff**로 진위 확인
+- `reward_std`가 매우 작아짐 → μ가 다양성 잃음. `mu.temperature`나 `top_p` 조정 검토
+- `completion_length`가 256 도달 빈번 → `max_new_tokens` 늘림 (메모리 영향)
+
+### 시각화 (3가지 옵션, 자동/수동 둘 다)
+
+학습 시작하면 `outputs/<run_name>/`에 다음 파일들이 자동 적재됨:
+- `metrics.jsonl` ← `JsonlMetricsCallback`이 매 log마다 한 줄씩 append
+- `runs/` (TensorBoard event 파일) ← HF Trainer 기본
+- `checkpoint-*/` ← 학습 중간 weight 저장
+
+#### A. Streamlit 실시간 대시보드 (가장 인터랙티브) ⭐
+
+```bash
+# 학습 PC host에서 (Docker 컨테이너 밖)
+uv pip install streamlit pandas matplotlib   # 1회만
+uv run streamlit run scripts/dashboard.py
+# 브라우저: http://localhost:8501
+# 또는 다른 머신에서: http://<학습PC IP>:8501
+```
+
+- 5초마다 jsonl 재로드 → 학습 진행 실시간 그래프
+- reward / reward_std / kl / lr / grad_norm / completion_length 6 panel
+- 최근 N step 필터 + raw table view
+
+#### B. TensorBoard (HF Trainer 자동 통합)
+
+```bash
+uv pip install tensorboard
+uv run tensorboard --logdir outputs/ --bind_all   # :6006
+```
+
+브라우저에서 다중 run 비교 가능.
+
+#### C. matplotlib PNG 그래프 (스크립트, 학습 끝나면)
+
+```bash
+uv run python scripts/plot_metrics.py
+# → outputs/stage8_smoke/plots/overview.png + 개별 png 6개
+```
+
+논문/리포트용 정적 그래프 생성.
+
+### wandb 활성화 (cloud)
+
+[configs/rl_q3.yaml](../configs/rl_q3.yaml)의 `logging.wandb_project: pav-rl`로 설정하면 cloud로도 push (tensorboard와 병행 가능). `WANDB_API_KEY` env 필요.
+
+---
+
+## 8. 7B로 확장 (옵션)
 
 | 파일 | 변경 키 |
 |---|---|

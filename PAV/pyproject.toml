@@ -33,6 +33,7 @@ gpu = [
     "hydra-core>=1.3",
     "came-pytorch>=0.0.7",            # CAME optimizer (factored variance + confidence guidance)
     "galore-torch>=1.0",              # GaLore optimizer (low-rank gradient projection, 1.5B Full FT 24GB)
+    "tensorboard>=2.15",              # 학습 metrics 시각화 (HF Trainer 자동 logging)
 ]
 # autoawq는 별도 설치 — torch 2.5 호환은 0.2.7+ (GPU만 의미)
 awq = ["autoawq>=0.2.7"]
@@ -40,6 +41,12 @@ awq = ["autoawq>=0.2.7"]
 serve = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
+]
+# 학습 metrics 대시보드 (scripts/dashboard.py)
+dashboard = [
+    "streamlit>=1.30",
+    "matplotlib>=3.8",
+    "pandas>=2.0",
 ]
 
 [dependency-groups]

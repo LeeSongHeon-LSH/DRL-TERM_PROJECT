@@ -10,13 +10,18 @@
 #   8001 — μ vLLM OpenAI API   (Qwen/Qwen2.5-Math-7B-Instruct frozen base)
 #   8002 — PRM FastAPI         (Skywork/Skywork-o1-Open-PRM-Qwen-2.5-1.5B int8)
 #
-# === VRAM 예측 (24 GB GPU, 1.5B μ + PRM 1.5B int8 기준) ===
-#   μ vLLM       ~6  GB   (gpu-memory-utilization 0.25, 1.5B bf16 + KV)
-#   PRM int8     ~1.7 GB  (bnb)
-#   합계         ~8  GB   / 마진 ~16 GB ✅ 매우 안전
+# === VRAM 예측 (24 GB GPU, 1.5B μ + PRM 1.5B int8 기준, Phase 1 K=16 batch) ===
+#   μ vLLM       ~17 GB  (gpu-memory-utilization 0.7, 1.5B bf16 + KV cache 14.4 GB)
+#   PRM int8     ~4  GB  (bnb 8bit)
+#   합계         ~21 GB  / 마진 ~3 GB
+#
+# === vLLM 안정성 옵션 (Phase 1 K=16 stress 회피) ===
+#   --max-model-len 2048    : sequence당 KV cache 절반 (4096→2048)
+#   --max-num-seqs 64       : concurrent seq 제한, queue로 안정
+#   --enforce-eager         : CUDA graph off, fragmentation 누적 회피
 #
 # 7B μ로 확장 시: MU_MODEL_ID=Qwen/Qwen2.5-Math-7B-Instruct, MU_GPU_MEM=0.65
-#   → μ 15.6 GB + PRM 1.7 GB = 17.3 GB / 마진 6.7 GB
+#   → μ 15.6 GB + PRM 4 GB = 19.6 GB / 마진 4.4 GB
 #
 # === 학습 PC가 호출하는 endpoint ===
 #   PRM_ENDPOINT=http://<이 PC IP>:8002
@@ -52,10 +57,12 @@ services:
       --model ${MU_MODEL_ID:-Qwen/Qwen2.5-Math-1.5B-Instruct}
       --port 8001
       --host 0.0.0.0
-      --gpu-memory-utilization ${MU_GPU_MEM:-0.25}
-      --max-model-len ${MU_MAX_LEN:-4096}
+      --gpu-memory-utilization ${MU_GPU_MEM:-0.6}
+      --max-model-len ${MU_MAX_LEN:-2048}
+      --max-num-seqs ${MU_MAX_NUM_SEQS:-64}
       --dtype bfloat16
       --enable-prefix-caching
+      --enforce-eager
     shm_size: "4g"
 
   # ---------------------------- PRM — FastAPI (port 8002) ----------------------------

@@ -100,7 +100,10 @@ def build_grpo_trainer(
         epsilon=settings.clip_eps,
         max_completion_length=settings.max_completion_length,
         optim=hf_optim,
-        report_to=["wandb"] if log_cfg.get("wandb_project") else [],
+        report_to=(
+            ["wandb", "tensorboard"] if log_cfg.get("wandb_project")
+            else ["tensorboard"]
+        ),
         run_name=log_cfg.get("wandb_run_name"),
         logging_steps=log_cfg.get("log_every", 10),
         save_strategy="steps",
@@ -154,7 +157,14 @@ def build_grpo_trainer(
     if custom_opt is not None:
         trainer_kwargs["optimizers"] = (custom_opt, None)   # scheduler는 Trainer가 default 생성
 
-    return GRPOTrainer(**trainer_kwargs)
+    trainer = GRPOTrainer(**trainer_kwargs)
+
+    # jsonl metrics logger — outputs/<run_name>/metrics.jsonl
+    # 대시보드 (scripts/dashboard.py, scripts/plot_metrics.py)에서 읽음
+    from .callbacks import JsonlMetricsCallback
+    trainer.add_callback(JsonlMetricsCallback(output_dir))
+
+    return trainer
 
 
 def _build_custom_optimizer(optim_name: str, model, lr: float):
@@ -207,7 +217,7 @@ def _adapt_reward_for_trl(
         gold_list = kwargs.get("answer") or [None] * len(prompts)
         inputs = list(zip(prompts, completions, gold_list))
 
-        n_workers = max(1, min(len(inputs), 4))
+        n_workers = max(1, min(len(inputs), 1))   # 4→1: ThreadPool 4/2 시도 모두 추론 PC vLLM disconnect, 직렬이 안정
         with ThreadPoolExecutor(max_workers=n_workers) as ex:
             rewards = list(ex.map(lambda x: _one(*x), inputs))
         return rewards
