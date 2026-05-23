@@ -50,9 +50,24 @@ class JsonlMetricsCallback(TrainerCallback):
         if not state.is_world_process_zero:
             return
         if state.global_step > 0:
-            # resume — 기존 jsonl 보존, 새 데이터를 append
-            log.info(f"JsonlMetricsCallback: resume from step {state.global_step}, "
-                     f"keeping existing {self.path}")
+            # resume — 기존 jsonl에서 step > global_step 인 데이터 truncate (중복 방지),
+            # step <= global_step 까지만 남김. 이후 새 학습이 step+1 부터 append.
+            if self.path.exists():
+                kept: list[str] = []
+                with self.path.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            d = json.loads(line)
+                            if d.get("step", 0) <= state.global_step:
+                                kept.append(line)
+                        except json.JSONDecodeError:
+                            continue
+                self.path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+                log.info(f"JsonlMetricsCallback: resume from step {state.global_step}, "
+                         f"truncated jsonl to {len(kept)} lines (step ≤ {state.global_step})")
             return
         # fresh start — 기존 파일 있으면 .bak으로 백업, 새 jsonl 시작
         if self.path.exists():
