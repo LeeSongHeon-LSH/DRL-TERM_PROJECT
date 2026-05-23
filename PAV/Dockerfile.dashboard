@@ -1,0 +1,24 @@
+# Streamlit 실시간 대시보드 — 학습 metrics.jsonl 읽어서 그래프 표시.
+#
+# 빌드:   docker compose build dashboard
+# 실행:   docker compose up -d dashboard
+# 접속:   http://<host>:8501
+#
+# 학습 image(pav-rl)와 분리 — streamlit 의존성만 가져서 가볍고 학습 rebuild에 영향 없음.
+FROM python:3.11-slim
+
+RUN pip install --no-cache-dir \
+    streamlit>=1.30 \
+    pandas>=2.0 \
+    matplotlib>=3.8
+
+WORKDIR /app
+
+EXPOSE 8501
+
+# scripts/, outputs/는 volume mount로 받음 (read-only outputs)
+CMD ["streamlit", "run", "scripts/dashboard.py", \
+     "--server.port", "8501", \
+     "--server.address", "0.0.0.0", \
+     "--server.headless", "true", \
+     "--browser.gatherUsageStats", "false"]

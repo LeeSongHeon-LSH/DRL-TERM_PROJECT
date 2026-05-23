@@ -24,8 +24,8 @@ grpo:
   kl_beta: 0.04             # anti-hacking
   clip_eps: 0.2
   learning_rate: 5.0e-7     # 1.5B Full FT 기준 (LoRA였다면 5e-6 — 10× 큼)
-  total_steps: 50              # Stage 8 smoke: 50 step에서 LoRA weight 변화 확인 (실제 학습은 5000+)
-  warmup_steps: 5
+  total_steps: 5000            # 본격 학습. step time 50s × 5000 = ~70시간
+  warmup_steps: 50             # 5000 step의 1% (smoke는 5)
   gradient_accumulation: 1
   # optimizer 선택.
   # paged_adamw_8bit: step 시 12GB scratch dequantize → 24GB OOM.
@@ -66,5 +66,5 @@ logging:
   wandb_project:               # 빈 값 → wandb 비활성, stdout만
   wandb_run_name: stage8_smoke
   log_every: 1                # 매 step metrics 기록 (dashboard/jsonl 세밀하게)
-  eval_every: 500
+  eval_every: 100             # 500→100: CUDA unknown error로 step 224에서 죽었던 사례 — 더 자주 체크포인트 저장 (resume 가능)
   dump_samples_every: 1000   # trivial-step 함정 모니터링

@@ -58,3 +58,18 @@ services:
     shm_size: "8g"
     # 추론 PC와 같은 LAN이면 host network로 두면 endpoint 설정이 단순해짐 (선택).
     # network_mode: host
+
+  # ---------------------------- Streamlit Dashboard (port 8501) ----------------------------
+  # 학습 metrics 실시간 시각화. 학습과 독립 — trainer 죽어도 dashboard 살아있음.
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    image: pav-dashboard:latest
+    container_name: pav-dashboard
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./outputs:/app/outputs:ro
