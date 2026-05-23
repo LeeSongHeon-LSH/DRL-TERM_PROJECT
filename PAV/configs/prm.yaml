@@ -19,7 +19,7 @@ batch_size: 16
 # mode: "remote"  → HTTP로 PRM 서버 호출 (RemotePRM 클래스)
 #                   서버: scripts/serve_prm_http.py (FastAPI + uvicorn)
 #                   환경변수 PRM_ENDPOINT로 endpoint override 가능
-mode: remote
+mode: local      # remote → local: PRM을 학습 PC GPU에 직접 로드 (HTTP overhead 제거, vLLM colocate 0.20 절감으로 자리 확보)
 remote:
   endpoint: http://localhost:8002
   timeout: 300              # K=16 score_batch 안정성 (120→300)

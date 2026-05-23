@@ -44,14 +44,28 @@ class RemotePRM:
         return self._client
 
     def _post(self, path: str, payload: dict) -> dict:
+        """PRM HTTP POST. retry on disconnect (KV cache fragmentation 누적 회복)."""
+        import time
+        import httpx as _httpx
+
         client = self._get_client()
         url = f"{self._endpoint}{path}"
-        resp = client.post(url, json=payload)
-        if resp.status_code != 200:
-            raise RuntimeError(
-                f"PRM HTTP {resp.status_code} on {path}: {resp.text[:200]}"
-            )
-        return resp.json()
+        last_exc: Exception | None = None
+        delay = 2.0
+        for attempt in range(5):
+            try:
+                resp = client.post(url, json=payload)
+                if resp.status_code != 200:
+                    raise RuntimeError(
+                        f"PRM HTTP {resp.status_code} on {path}: {resp.text[:200]}"
+                    )
+                return resp.json()
+            except (_httpx.RemoteProtocolError, _httpx.ReadError, _httpx.ConnectError, _httpx.ReadTimeout) as e:
+                last_exc = e
+                log.warning(f"PRM disconnect on {path} (attempt {attempt+1}/5): {type(e).__name__} — retry in {delay}s")
+                time.sleep(delay)
+                delay = min(delay * 2, 30.0)
+        raise RuntimeError(f"PRM HTTP {path} 5회 retry 실패: {last_exc}") from last_exc
 
     # ------------------------------------------------------------------ api
     @torch.no_grad()

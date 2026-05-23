@@ -64,7 +64,10 @@ class RemoteMuSampler:
         )
 
     def _call_completions(self, prompt: str, n: int) -> list[str]:
-        """vLLM OpenAI /v1/completions 호출 — n개 alternative 생성."""
+        """vLLM OpenAI /v1/completions 호출 — n개 alternative 생성. retry on disconnect."""
+        import time
+        import httpx as _httpx
+
         client = self._get_client()
         payload = {
             "model": self.cfg.model_id,
@@ -75,14 +78,23 @@ class RemoteMuSampler:
             "max_tokens": self.cfg.max_new_tokens,
             "stop": list(self.cfg.step_stop),
         }
-        resp = client.post(f"{self._endpoint}/v1/completions", json=payload)
-        if resp.status_code != 200:
-            raise RuntimeError(
-                f"μ HTTP {resp.status_code}: {resp.text[:200]}"
-            )
-        data = resp.json()
-        # OpenAI 포맷: {"choices": [{"text": "...", "index": 0}, ...]}
-        return [c["text"].strip() for c in data["choices"]]
+        # 추론 PC vLLM이 KV cache fragmentation 누적으로 가끔 disconnect → 재시도로 회복
+        last_exc: Exception | None = None
+        delay = 2.0
+        for attempt in range(5):
+            try:
+                resp = client.post(f"{self._endpoint}/v1/completions", json=payload)
+                if resp.status_code != 200:
+                    raise RuntimeError(f"μ HTTP {resp.status_code}: {resp.text[:200]}")
+                data = resp.json()
+                return [c["text"].strip() for c in data["choices"]]
+            except (_httpx.RemoteProtocolError, _httpx.ReadError, _httpx.ConnectError, _httpx.ReadTimeout) as e:
+                last_exc = e
+                log.warning(f"μ disconnect (attempt {attempt+1}/5): {type(e).__name__} — retry in {delay}s")
+                time.sleep(delay)
+                delay = min(delay * 2, 30.0)
+        # 5번 retry 실패 → 진짜 죽음
+        raise RuntimeError(f"μ HTTP 5회 retry 실패: {last_exc}") from last_exc
 
     # ------------------------------------------------------------------ api
     def sample_step(self, problem: str, prefix: str) -> str:

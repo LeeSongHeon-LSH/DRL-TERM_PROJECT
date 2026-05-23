@@ -217,7 +217,7 @@ def _adapt_reward_for_trl(
         gold_list = kwargs.get("answer") or [None] * len(prompts)
         inputs = list(zip(prompts, completions, gold_list))
 
-        n_workers = max(1, min(len(inputs), 1))   # 4→1: ThreadPool 4/2 시도 모두 추론 PC vLLM disconnect, 직렬이 안정
+        n_workers = max(1, min(len(inputs), 4))   # 추론 PC vLLM 설정 (max-num-seqs 64 + enforce-eager + max-len 2048)로 4 동시 안정
         with ThreadPoolExecutor(max_workers=n_workers) as ex:
             rewards = list(ex.map(lambda x: _one(*x), inputs))
         return rewards

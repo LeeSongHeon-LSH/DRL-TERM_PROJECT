@@ -58,13 +58,13 @@ data:
 vllm:
   enable_prefix_caching: true
   colocate: true                 # GaLore/CAME 메모리 절감으로 vLLM 자리 확보
-  gpu_memory_utilization: 0.30   # 0.20→0.30: vLLM 4.8→7.2GB (학습 PC 9GB 여유 활용, KV cache 1.5배)
+  gpu_memory_utilization: 0.20   # 0.30→0.20: PRM 학습 PC로 옮길 자리 4GB 확보 (vLLM 7.2→4.8GB)
   max_new_tokens: 256            # 학습용 forward seq (GSM8K solution은 보통 200-300 tokens)
 
 # 로깅
 logging:
   wandb_project:               # 빈 값 → wandb 비활성, stdout만
   wandb_run_name: stage8_smoke
-  log_every: 5
+  log_every: 1                # 매 step metrics 기록 (dashboard/jsonl 세밀하게)
   eval_every: 500
   dump_samples_every: 1000   # trivial-step 함정 모니터링
