@@ -58,7 +58,7 @@ data:
 vllm:
   enable_prefix_caching: true
   colocate: true                 # GaLore/CAME 메모리 절감으로 vLLM 자리 확보
-  gpu_memory_utilization: 0.20   # 0.30→0.20: PRM 학습 PC로 옮길 자리 4GB 확보 (vLLM 7.2→4.8GB)
+  gpu_memory_utilization: 0.30   # PRM remote 복귀 → vLLM 7.2GB 복원
   max_new_tokens: 256            # 학습용 forward seq (GSM8K solution은 보통 200-300 tokens)
 
 # 로깅
