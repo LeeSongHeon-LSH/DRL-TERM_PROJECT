@@ -23,4 +23,4 @@ mode: remote
 remote:
   endpoint: http://localhost:8002
   timeout: 300              # K=16 score_batch 안정성 (120→300)
-  batch_size: 32            # 추론 서버 여유 활용 (16→32)
+  batch_size: 16            # 32→16: 추론 PC GPU 부하 (μ 14.4GB + PRM batch) → OOM 회피

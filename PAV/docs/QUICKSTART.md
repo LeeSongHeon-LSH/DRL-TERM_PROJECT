@@ -29,7 +29,8 @@ curl http://localhost:8002/health                            # PRM   → {"ok": 
 curl http://localhost:8001/v1/models                         # μ vLLM → {"data": [...]}
 ```
 
-VRAM 점유: **~8 GB / 24 GB** (μ 1.5B 6 GB + PRM int8 1.7 GB).
+VRAM 점유: **~18 GB / 24 GB** (μ 1.5B @ MU_GPU_MEM=0.6 → 14.4 GB + PRM int8 ~4 GB).
+KV cache가 크게 잡혀야 Phase 1 K=16 batch가 안정적이라 0.6 권장 (이전 0.25는 disconnect 빈발).
 
 ---
 
@@ -46,7 +47,9 @@ docker compose up -d                  # 또는 native: bash run_train.sh --mode 
 docker compose logs -f
 ```
 
-VRAM 점유: **~17 GB / 24 GB** (π 1.5B Full FT + 8bit Adam + vLLM colocate 0.20).
+VRAM 점유: **~18 GB / 24 GB** (π 1.5B Full FT + GaLore 8bit layerwise + vLLM colocate 0.30 = 7.2 GB).
+GaLore optimizer로 1.5B Full FT가 24GB에 들어옴 (`paged_adamw_8bit`은 step scratch 12GB로 OOM, `CAME`은 RAM 폭주 hang).
+실시간 학습 진행 보려면 `tmux attach -t <세션명>` (docker logs는 `\r` carriage return 처리 못해 metrics만 보임).
 
 ---
 
@@ -73,6 +76,8 @@ VRAM 점유: **~17 GB / 24 GB** (π 1.5B Full FT + 8bit Adam + vLLM colocate 0.2
 mode: remote                       # local → remote 자동 swap
 remote:
   endpoint: http://localhost:8002  # PRM_ENDPOINT 환경변수로 override
+  timeout: 300                     # K=16 score_batch 안정성 (default 120 → 300)
+  batch_size: 16                   # 32는 추론 PC OOM 위험
 quantization: 8bit                 # bnb LLM.int8
 ```
 
@@ -87,16 +92,36 @@ mu:
   model_id: Qwen/Qwen2.5-Math-1.5B-Instruct
   remote:
     endpoint: http://localhost:8001 # MU_ENDPOINT 환경변수로 override
+    timeout: 600                    # K=16 generation batch (default 180 → 600)
 ```
 
 [configs/rl_q3.yaml](../configs/rl_q3.yaml):
 ```yaml
+pav:
+  method: mc_rollout               # Phase 1 (μ K개 alternative rollout, counterfactual advantage)
+                                   # smoke test는 differential (Phase 0, μ 안 씀)
+  K: 16
 grpo:
   learning_rate: 5.0e-7            # Full FT 스케일 (LoRA는 5e-6)
-  optim: paged_adamw_8bit          # ⭐ 24GB GPU Full FT 필수
+  group_size: 4                    # GRPO trajectory 수
+  optim: galore_adamw_8bit_layerwise  # ⭐ 24GB GPU + 1.5B Full FT 권장
+                                      # paged_adamw_8bit은 step scratch 12GB로 OOM
+                                      # CAME은 RAM 폭주 hang (검증 실패)
+                                      # adafactor도 작동 (대안, LR 민감)
 vllm:
   colocate: true
-  gpu_memory_utilization: 0.20     # 4.8 GB만 예약
+  gpu_memory_utilization: 0.30     # 7.2 GB — KV cache 여유, π rollout 안정
+```
+
+[docker-compose.yml](../docker-compose.yml) environment:
+```yaml
+PYTHONUNBUFFERED: "1"              # stdout/stderr 즉시 flush (metrics 실시간)
+PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"  # CUDA fragmentation 완화 (WSL2는 무시)
+```
+
+[추론 PC `.env`](../.env.inference.example):
+```bash
+MU_GPU_MEM=0.6                     # vLLM KV cache (default 0.25 → 0.6)
 ```
 
 ---
@@ -106,15 +131,76 @@ vllm:
 | 증상 | 원인 / 해결 |
 |---|---|
 | trainer가 `Connection refused` | 추론 PC의 vLLM/PRM 서버 아직 not ready. `docker compose logs -f` 로 "Application startup complete" 확인 후 trainer 재시작 |
-| trainer 첫 호출에서 timeout | μ 모델 lazy 로드(~1–3 min). `.env`의 `MU_GPU_MEM`/PRM init time 고려. config의 `rpc_timeout` 늘리기 |
+| trainer 첫 호출에서 timeout | μ 모델 lazy 로드(~1–3 min). `.env`의 `MU_GPU_MEM`/PRM init time 고려. config의 `mu.remote.timeout`/`remote.timeout` 늘리기 |
+| `httpx.RemoteProtocolError: Server disconnected` | 추론 PC에서 PRM 또는 μ가 batch 처리 중 OOM/crash. `prm.yaml`의 `remote.batch_size`를 16으로, `.env`의 `MU_GPU_MEM`을 0.5로 낮춤 |
 | `PRM_ENDPOINT`가 yaml override 안 됨 | 환경변수가 trainer 프로세스에 전달됐는지 확인. docker면 compose의 `environment:` 섹션, native면 `export PRM_ENDPOINT=...` |
-| 학습 PC OOM | `rl_q3.yaml`의 `vllm.gpu_memory_utilization`을 0.15로 낮춤. 그래도 OOM이면 `grpo.gradient_accumulation` 2로 늘리고 `group_size` 4로 |
+| 학습 PC OOM (`pythonInterface.cpp` 같은 bitsandbytes 에러) | `paged_adamw_8bit`의 step scratch dequantize가 1.5B에서 ~12GB 사용 → OOM. `optim: galore_adamw_8bit_layerwise`로 변경 (혹은 adafactor) |
+| 학습 첫 step에서 매우 오래 (~60-90초) hang처럼 보임 | GaLore의 layerwise projection matrix 초기화. 정상 — step 2부터 정상 속도 |
+| 학습이 0/50에서 진행 안 됨 (GPU 100% but step 안 늘어남) | CAME optimizer의 RAM 폭주 (96%). `optim: galore_adamw_8bit_layerwise`로 변경 |
+| 학습 진행률(`tqdm` progress bar)이 docker logs에 안 보임 | `docker logs`는 line-based(`\n`만 새 줄)라 tqdm의 `\r` 갱신이 학습 끝에 한 번에 flush됨. `tmux attach -t pav`로 직접 보면 실시간 보임. metrics(`logging_steps`)는 정상 출력 |
 | μ 응답이 비어있음 | `policy.yaml`의 `mu.step_stop`이 정책 출력 boundary와 안 맞을 수 있음. `["\n\n", "\n"]` 둘 다 시도 |
 | 추론 PC vLLM 시작 시 OOM | `.env.inference.example`의 `MU_GPU_MEM` 낮추거나 `MU_MAX_LEN` 줄임 (default 4096) |
 
 ---
 
-## 6. 7B로 확장 (옵션)
+## 6. 분산 최적화 (Phase 1 학습 가속)
+
+Phase 1 (`pav.method: mc_rollout`)은 K=16 μ rollout + ~200 PRM 호출 / step → 직렬 처리 시 step time 60-90초. 적용된 최적화 / 검증된 trade-off:
+
+### 6.1 trajectory 처리는 직렬 (ThreadPool 시도 → 실패)
+
+[src/train/grpo_trainer.py:`_adapt_reward_for_trl`](../src/train/grpo_trainer.py)는 group_size trajectory를 **for loop 직렬**로 처리.
+
+**ThreadPoolExecutor 검증 결과 — 추론 PC vLLM이 concurrent K=16 batch generation을 못 견딤**:
+
+| max_workers | 결과 |
+|---|---|
+| 4 | step 4에서 `RemoteProtocolError: Server disconnected` |
+| 2 | step 6에서 동일 disconnect |
+| **1 (직렬)** | **50 step 완주 ✅ (~54분)** |
+
+vLLM의 동시 sequence scheduling/KV cache가 N×K (N=동시 trajectory, K=16)을 못 견디면 응답 중 끊김. 직렬이 안정. 추론 PC vLLM의 `max_num_seqs` 늘리거나 별도 inference replica 추가하면 ThreadPool 활성화 가능하나 현재 stack에서는 직렬 유지.
+
+### 6.2 timeout/batch_size 보수적 조정
+
+| key | 값 | 이유 |
+|---|---|---|
+| `mu.remote.timeout` | 600s | K=16 batch generation은 추론 PC에서 ~60-120초 |
+| `remote.timeout` (PRM) | 300s | score_batch 16 안정 |
+| `remote.batch_size` (PRM) | 16 | 32는 PRM 8bit Skywork OOM |
+| `vllm.gpu_memory_utilization` | 0.30 | 학습 PC 7.2 GB (KV cache 여유) |
+| `MU_GPU_MEM` (추론 PC) | 0.6 | μ KV cache 14.4 GB (n=16 batch 안정) |
+
+### 6.3 가시성 (PYTHONUNBUFFERED + tmux)
+
+docker-compose.yml의 environment:
+```yaml
+PYTHONUNBUFFERED: "1"   # metrics 즉시 flush
+```
+
+tqdm progress bar 실시간 보려면 **`tmux attach -t <세션명>`** (docker logs는 line-based라 `\r` 처리 못 함 → 학습 끝에 한꺼번에 flush).
+
+### 6.4 한 step 시간 분해 (현재 default — 직렬)
+
+```
+시간 (초)    0         15        30        45        60        75
+──────────────────────────────────────────────────────────────────
+trajectory 1 [μ→][PRM→][μ→][PRM→]
+trajectory 2                       [μ→][PRM→][μ→][PRM→]
+trajectory 3                                              [μ→][PRM→]...
+trajectory 4                                                          ...
+                                                                       │
+backward+opt:                                                          └►[backward]
+
+학습 PC GPU:  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░██████  ← rollout 대기 중 idle
+추론 PC GPU:  ▆▆░░▆▆░░▆▆░░▆▆░░▆▆░░▆▆░░▆▆░░▆▆░░▆▆░░▆▆░░░░░░░░░░░░░░░░░░░░░░  ← spike-idle
+```
+
+50 step 실측: **~54분** (step time 60-90초, GaLore 첫 step 60-90초 포함).
+
+---
+
+## 7. 7B로 확장 (옵션)
 
 | 파일 | 변경 키 |
 |---|---|

@@ -17,8 +17,8 @@ PAV-RL 파이프라인의 **시스템 구조 (단일/분산) → 한 step 데이
 flowchart LR
     subgraph Host["단일 호스트: GPU 1대"]
         direction TB
-        TRAIN["GRPOTrainer (TRL)<br>π = Qwen2.5-Math-1.5B Full FT<br>(8-bit Adam)"]
-        VLLM["vLLM colocate rollout<br>gpu_mem_util=0.20"]
+        TRAIN["GRPOTrainer (TRL)<br>π = Qwen2.5-Math-1.5B Full FT<br>(GaLore 8bit)"]
+        VLLM["vLLM colocate rollout<br>gpu_mem_util=0.30"]
         REWARD["PAVRewardFn<br>(stats/sample buffer)"]
         PRM_LOC["PRM (local, int8)<br>Skywork-PRM 1.5B"]
         MU_LOC["μ (local, vLLM)<br>Qwen2.5-Math-1.5B base"]
@@ -53,7 +53,7 @@ flowchart LR
 flowchart LR
     subgraph TrainPC["학습 PC (3090, 24 GB)"]
         direction TB
-        TRAIN["GRPOTrainer (TRL)<br>π Qwen2.5-Math-1.5B Full FT (default)<br>+ 8-bit Adam + vLLM colocate(0.20)"]
+        TRAIN["GRPOTrainer (TRL)<br>π Qwen2.5-Math-1.5B Full FT (default)<br>+ GaLore 8bit + vLLM colocate(0.30)"]
         REWARD["PAVRewardFn"]
         RPRM["RemotePRM (httpx)"]
         RMU["RemoteMuSampler (httpx, OpenAI API)"]
@@ -276,9 +276,9 @@ flowchart LR
 
 | 시나리오 | VRAM | 마진 |
 |---|---:|---:|
-| **π 1.5B Full FT + 8bit Adam + vLLM colocate(0.20)** ⭐ default | **~17 GB** | **7 GB ✅** |
-| π 7B + 4bit QLoRA + LoRA + vLLM colocate(0.20) | ~13 GB | 11 GB ✅ |
-| π 7B + LoRA (bf16) + vLLM colocate(0.20) | ~22 GB | 2 GB ⚠ |
+| **π 1.5B Full FT + GaLore 8bit + vLLM colocate(0.30)** ⭐ default | **~17 GB** | **7 GB ✅** |
+| π 7B + 4bit QLoRA + LoRA + vLLM colocate(0.30) | ~13 GB | 11 GB ✅ |
+| π 7B + LoRA (bf16) + vLLM colocate(0.30) | ~22 GB | 2 GB ⚠ |
 
 **추론 PC (3090 Ti 24GB)**
 
@@ -317,9 +317,9 @@ flowchart LR
 |---|---|
 | π 1.5B base (bf16) | ~3.1 GB |
 | gradients (bf16) | ~3.1 GB |
-| 8-bit Adam states | ~3.1 GB |
+| GaLore 8bit states | ~3.1 GB |
 | activations (grad-ckpt, group=8) | ~2–3 GB |
-| vLLM colocate (`gpu_mem_util=0.20`) | ~4.8 GB |
+| vLLM colocate (`gpu_mem_util=0.30`) | ~4.8 GB |
 | PRM 1.5B (int8) | ~1.7 GB |
 | μ 1.5B (bf16) | ~3 GB |
 | **합계** | **~21 GB** ✅ 마진 3 GB |
@@ -329,7 +329,7 @@ flowchart LR
 **옵션 B. Phase 0 (μ 불필요, 1.5B Full FT)**
 | 항목 | 메모리 |
 |---|---|
-| π 1.5B + 8bit Adam + grads | ~9.3 GB |
+| π 1.5B + GaLore 8bit + grads | ~9.3 GB |
 | activations | ~2–3 GB |
 | vLLM colocate (0.20) | ~4.8 GB |
 | PRM 1.5B (int8) | ~1.7 GB |
@@ -340,7 +340,7 @@ flowchart LR
 |---|---|
 | π 7B base (bf16) | ~14 GB |
 | LoRA r=64 + Adam | ~1.2 GB |
-| vLLM colocate (`gpu_mem_util=0.20`) | ~4.8 GB |
+| vLLM colocate (`gpu_mem_util=0.30`) | ~4.8 GB |
 | PRM 1.5B (int8) | ~1.7 GB |
 | μ 7B (bf16) | ~15 GB |
 | **합계** | **~37 GB** — A100/A6000+ |
@@ -348,7 +348,7 @@ flowchart LR
 **옵션 D ⭐ (분산 default). 1.5B Full FT — 24GB 카드 2장**
 | 학습 PC (3090) | 추론 PC (3090 Ti) |
 |---|---|
-| π 1.5B Full FT + 8bit Adam + vLLM(0.20) ~17 GB | μ 1.5B vLLM(0.25) ~6 GB |
+| π 1.5B Full FT + GaLore 8bit + vLLM(0.20) ~17 GB | μ 1.5B vLLM(0.25) ~6 GB |
 | | PRM 1.5B int8 ~1.7 GB |
 | **마진 7 GB ✅** | **마진 16 GB ✅ (매우 안전)** |
 

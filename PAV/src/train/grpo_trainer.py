@@ -185,27 +185,31 @@ def _adapt_reward_for_trl(
 ) -> Callable:
     """PAVRewardFn (step-wise) → TRL reward_func (trajectory scalar).
 
-    TRL은 dataset의 columns를 reward_func에 kwargs로 전달.
-    우리 dataset은 "prompt", "answer" 두 컬럼을 가정.
+    group_size trajectory를 ThreadPoolExecutor로 병렬 처리 (max_workers=4).
+    추론 PC가 fresh 상태(누적 fragmentation 없음)면 4 동시 처리 가능 — 직렬 대비 ~3-4× 가속 기대.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     extract = answer_extractor or _default_extract
     verifier = _build_verifier()
 
-    def _trl_reward(prompts, completions, **kwargs) -> list[float]:
-        # answer 컬럼은 list[Any] (None 가능). prompt도 list[str|list[dict]].
-        gold_list = kwargs.get("answer") or [None] * len(prompts)
+    def _one(prompt, completion, gold) -> float:
+        problem = _to_text(prompt)
+        comp_text = _to_text(completion)
+        traj = split_steps(comp_text)
+        if not traj:
+            return 0.0
+        final_correct = verifier(extract(comp_text), gold) if gold is not None else False
+        step_rewards = reward_fn(problem, traj, final_correct=final_correct)
+        return sum(step_rewards)
 
-        rewards: list[float] = []
-        for prompt, completion, gold in zip(prompts, completions, gold_list):
-            problem = _to_text(prompt)
-            comp_text = _to_text(completion)
-            traj = split_steps(comp_text)
-            if not traj:
-                rewards.append(0.0)
-                continue
-            final_correct = verifier(extract(comp_text), gold) if gold is not None else False
-            step_rewards = reward_fn(problem, traj, final_correct=final_correct)
-            rewards.append(sum(step_rewards))
+    def _trl_reward(prompts, completions, **kwargs) -> list[float]:
+        gold_list = kwargs.get("answer") or [None] * len(prompts)
+        inputs = list(zip(prompts, completions, gold_list))
+
+        n_workers = max(1, min(len(inputs), 4))
+        with ThreadPoolExecutor(max_workers=n_workers) as ex:
+            rewards = list(ex.map(lambda x: _one(*x), inputs))
         return rewards
 
     return _trl_reward

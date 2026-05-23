@@ -20,8 +20,19 @@
 - **분산 옵션 (HTTP transport)** — μ + PRM을 다른 PC로 분리. trainer는 단일 24 GB GPU에서도
   1.5B Full FT (default) 또는 7B QLoRA 가능. weight broadcast 0, RPC 부하 ~6 MB/step (100 Mbps도 충분).
 - **PRM 8-bit 양자화** — bitsandbytes LLM.int8()로 Skywork 1.5B를 ~1.7 GB로 압축.
-- **현재 default: π/μ = Qwen2.5-Math-1.5B-Instruct + Full FT** (`full_ft: true`, `optim: paged_adamw_8bit`).
+- **현재 default: π/μ = Qwen2.5-Math-1.5B-Instruct + Full FT** (`full_ft: true`, `optim: galore_adamw_8bit_layerwise`).
   7B + QLoRA로 확장은 yaml 키 변경만으로 가능.
+- **Optimizer 검증 결과** (1.5B Full FT, 24GB GPU):
+  - ❌ `paged_adamw_8bit`: step scratch dequantize 12GB → OOM
+  - ❌ `CAME`: factored variance + confidence guidance가 RAM 96% 폭주, step 0/50 hang
+  - ✅ `adafactor`: factored variance, state ~1.5GB, 50 step 596초 완주 (Phase 0)
+  - ✅ `galore_adamw_8bit_layerwise` ⭐: gradient low-rank projection + 8bit + layer 단위, 50 step 553초 (Phase 0). 권장
+- **분산 최적화**:
+  - `_adapt_reward_for_trl`는 **직렬 처리** (ThreadPoolExecutor 2/4 동시 시도 → 추론 PC vLLM이 concurrent K=16 batch generation 못 견디고 `RemoteProtocolError: Server disconnected`, 직렬이 안정).
+  - HTTP timeout: μ 600s / PRM 300s (K=16 batch 안정성).
+  - 추론 PC `MU_GPU_MEM=0.6` (14.4GB) — KV cache 여유로 n=16 batch generation 안정.
+  - 학습 PC `vllm.gpu_memory_utilization=0.30` (7.2GB) — π colocate rollout.
+- **가시성**: `PYTHONUNBUFFERED=1` (docker-compose env)로 metrics 실시간 flush. tqdm progress bar는 `\r` carriage return이라 `docker logs`엔 한꺼번에 flush → `tmux attach`로 직접 봐야 실시간.
 
 가중치만 받으면 `00_smoke_prm → 10_label_steps → 01_phase0_diff → 02_phase1_mc → 03_grpo_train`
 순서로 즉시 학습 진입 가능합니다.
