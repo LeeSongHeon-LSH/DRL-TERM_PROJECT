@@ -78,10 +78,12 @@ class RemoteMuSampler:
             "max_tokens": self.cfg.max_new_tokens,
             "stop": list(self.cfg.step_stop),
         }
-        # 추론 PC vLLM이 KV cache fragmentation 누적으로 가끔 disconnect → 재시도로 회복
-        last_exc: Exception | None = None
+        # 추론 PC vLLM이 KV cache fragmentation 누적으로 가끔 disconnect → 무한 재시도로 회복
+        # 사용자 직접 중단할 때까지 학습 안 죽임.
         delay = 2.0
-        for attempt in range(5):
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 resp = client.post(f"{self._endpoint}/v1/completions", json=payload)
                 if resp.status_code != 200:
@@ -89,12 +91,9 @@ class RemoteMuSampler:
                 data = resp.json()
                 return [c["text"].strip() for c in data["choices"]]
             except (_httpx.RemoteProtocolError, _httpx.ReadError, _httpx.ConnectError, _httpx.ReadTimeout) as e:
-                last_exc = e
-                log.warning(f"μ disconnect (attempt {attempt+1}/5): {type(e).__name__} — retry in {delay}s")
+                log.warning(f"μ disconnect (attempt {attempt}, ∞): {type(e).__name__} — retry in {delay}s")
                 time.sleep(delay)
-                delay = min(delay * 2, 30.0)
-        # 5번 retry 실패 → 진짜 죽음
-        raise RuntimeError(f"μ HTTP 5회 retry 실패: {last_exc}") from last_exc
+                delay = min(delay * 2, 30.0)   # exponential backoff cap 30s
 
     # ------------------------------------------------------------------ api
     def sample_step(self, problem: str, prefix: str) -> str:
