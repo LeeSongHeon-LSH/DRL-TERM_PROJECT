@@ -35,14 +35,33 @@ class JsonlMetricsCallback(TrainerCallback):
     """매 logging_steps의 metrics을 jsonl 파일로 적재 — 분석/그래프용.
 
     각 line: {"step": N, "loss": ..., "reward": ..., ...}
+
+    resume 시:
+      - on_train_begin에서 state.global_step > 0이면 resume으로 간주 → 기존 jsonl 보존
+      - fresh start면 (global_step == 0) jsonl backup 후 새로 시작
     """
 
     def __init__(self, output_dir: str | Path):
         self.path = Path(output_dir) / "metrics.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # 새 run 시작 시 기존 파일 지움 (resume은 별도 처리)
+        # 파일 제거는 on_train_begin에서 resume 여부 보고 결정
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        if not state.is_world_process_zero:
+            return
+        if state.global_step > 0:
+            # resume — 기존 jsonl 보존, 새 데이터를 append
+            log.info(f"JsonlMetricsCallback: resume from step {state.global_step}, "
+                     f"keeping existing {self.path}")
+            return
+        # fresh start — 기존 파일 있으면 .bak으로 백업, 새 jsonl 시작
         if self.path.exists():
-            self.path.unlink()
+            backup = self.path.with_suffix(".jsonl.bak")
+            try:
+                self.path.rename(backup)
+                log.info(f"JsonlMetricsCallback: fresh start, backed up old → {backup}")
+            except OSError:
+                self.path.unlink()
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         if logs is None or not state.is_world_process_zero:

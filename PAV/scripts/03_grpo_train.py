@@ -75,7 +75,9 @@ def main():
         )
     )
 
-    trainer.train()
+    # resume_from_checkpoint=True → output_dir에서 최신 checkpoint 자동 탐색.
+    # checkpoint 없으면 fresh start (HF Trainer가 알아서 처리).
+    trainer.train(resume_from_checkpoint=True)
 
 
 if __name__ == "__main__":
