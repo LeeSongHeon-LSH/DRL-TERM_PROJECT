@@ -43,22 +43,35 @@ class RemotePRM:
             self._client = httpx.Client(timeout=self.cfg.timeout)
         return self._client
 
+    def _reset_client(self):
+        """keepalive pool 의 깨진 socket 강제 폐기 — 다음 _get_client() 가 fresh 생성."""
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
+
     def _post(self, path: str, payload: dict) -> dict:
-        """PRM HTTP POST. 무한 retry on disconnect (사용자 직접 중단할 때까지 학습 안 죽임)."""
+        """PRM HTTP POST. 무한 retry on disconnect (사용자 직접 중단할 때까지 학습 안 죽임).
+
+        실패 시 _reset_client() — 깨진 keepalive socket 재사용 회피 (이전 stuck 의 근본 원인).
+        """
         import time
         import httpx as _httpx
 
-        client = self._get_client()
         url = f"{self._endpoint}{path}"
         delay = 2.0
         attempt = 0
         while True:
             attempt += 1
+            client = self._get_client()   # retry 마다 fresh client (이전 client 가 closed 면 새로 생성)
             try:
                 resp = client.post(url, json=payload)
                 if 500 <= resp.status_code < 600:
                     # 5xx (nginx upstream 일시 장애 등) — retry
                     log.warning(f"PRM HTTP {resp.status_code} on {path} (attempt {attempt}, ∞) — retry in {delay}s")
+                    self._reset_client()
                     time.sleep(delay)
                     delay = min(delay * 2, 30.0)
                     continue
@@ -69,6 +82,7 @@ class RemotePRM:
                 return resp.json()
             except (_httpx.RemoteProtocolError, _httpx.ReadError, _httpx.ConnectError, _httpx.ReadTimeout) as e:
                 log.warning(f"PRM disconnect on {path} (attempt {attempt}, ∞): {type(e).__name__} — retry in {delay}s")
+                self._reset_client()
                 time.sleep(delay)
                 delay = min(delay * 2, 30.0)   # exponential backoff cap 30s
 
