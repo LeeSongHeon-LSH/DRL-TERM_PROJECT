@@ -368,6 +368,30 @@ flowchart LR
 - 시스템 결정 사항: [IMPLEMENTATION_REPORT.md §3](IMPLEMENTATION_REPORT.md)
 - 가중치 다운로드: [scripts/download_models.py](../scripts/download_models.py)
 - 단일 PC 실행: `bash run_train.sh --mode {smoke|phase0|phase1}`
-- 분산 실행: `PRM_ENDPOINT=... MU_ENDPOINT=... bash run_train.sh --mode phase1`
-- Docker (단일): `docker compose up -d`
-- Docker (분산 — 추론 PC): `docker compose -f docker-compose.inference.yml up -d`
+- 분산 실행 (직접 LAN): `PRM_ENDPOINT=... MU_ENDPOINT=... bash run_train.sh --mode phase1`
+- Docker (단일 PC swap pipeline): `docker compose -f docker-compose.single.yml up -d`
+- Docker (분산 — 학습 PC + nginx-lb): `ZT_NETWORK_ID=<id> docker compose up -d`
+- Docker (분산 — 추론 PC): `ZT_NETWORK_ID=<id> docker compose -f docker-compose.inference.yml up -d zerotier mu-server prm-server`
+- ZeroTier cluster auto-discovery: `bash scripts/run-discovery.sh`
+
+---
+
+## 7. 분산 인프라 (3가지 모드)
+
+| 모드 | hw | network | 특징 |
+|---|---|---|---|
+| **단일 PC swap** | 1 GPU | 없음 (모두 local) | π/PRM/μ를 GPU↔CPU dynamic swap. Phase 1 K=16까지 가능, 매우 안정. step time ~60-90초 |
+| **분산 LAN 직접** | 2+ GPU (같은 LAN) | LAN 사설 IP | 학습 PC trainer ↔ 추론 PC (mu-server, prm-server). 사설 IP로 직접 HTTP. step ~50초 |
+| **ZeroTier mesh + nginx-lb** | N GPU (어디든) | ZeroTier 가상 LAN (10.x.x.x) | 다른 위치/NAT 뒤 PC를 가상 LAN으로 묶음. 학습 PC nginx-lb가 다중 replica 분산. cluster_discovery로 자동 노드 분류. 무중단 학습 + fail-over |
+
+ZeroTier 모드 컴포넌트:
+```
+[학습 PC]                                                     [추론 PC들]
+ trainer ──HTTP localhost:18001/18002──► nginx-lb ──► ZeroTier──► mu-server
+                                              │                     prm-server
+                                              ▼                     ...
+                                     least_conn upstream            (5070 × N 가능)
+                                     (auto fail-over)
+ ztncui (port 3000)
+ (controller + 웹UI, 자체 호스팅)
+```

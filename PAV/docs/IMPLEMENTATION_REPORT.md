@@ -30,8 +30,24 @@
 - **분산 최적화**:
   - `_adapt_reward_for_trl`는 **직렬 처리** (ThreadPoolExecutor 2/4 동시 시도 → 추론 PC vLLM이 concurrent K=16 batch generation 못 견디고 `RemoteProtocolError: Server disconnected`, 직렬이 안정).
   - HTTP timeout: μ 600s / PRM 300s (K=16 batch 안정성).
+  - PRM/μ HTTP 무한 retry (exponential backoff 2s→30s cap) — 추론 PC vLLM 일시 hang 회복.
   - 추론 PC `MU_GPU_MEM=0.6` (14.4GB) — KV cache 여유로 n=16 batch generation 안정.
   - 학습 PC `vllm.gpu_memory_utilization=0.30` (7.2GB) — π colocate rollout.
+- **단일 PC Swap Pipeline** (24GB GPU 1대만 있을 때, [src/swap/](../src/swap/)):
+  - π vLLM colocate (sleep mode level 1) + PRM/μ를 GPU↔CPU dynamic swap.
+  - 한 시점에 한 모델만 GPU 활성 (orchestrator가 swap_to(pi/prm/mu)로 교체).
+  - μ는 vLLM 안 쓰고 HF model.generate() — swap 가능.
+  - Phase 1 K=16까지 단일 GPU에서 가능. step time ~60-90초 (분산 50초 대비 swap overhead).
+  - HTTP RPC 0회 → disconnect/네트워크 stall 위험 없음.
+  - 핵심 파일: [src/swap/orchestrator.py](../src/swap/orchestrator.py), [src/swap/trainer.py](../src/swap/trainer.py), [scripts/03_grpo_train_swap.py](../scripts/03_grpo_train_swap.py), [docker-compose.single.yml](../docker-compose.single.yml).
+- **ZeroTier mesh cluster** (NAT 우회 + 다중 추론 노드, 공인 IP 0개로 가능):
+  - ZTNCUI 자체 호스팅 (controller + 웹UI port 3000) — zerotier.com 로그인 불필요.
+  - 학습 PC와 추론 PC(들)이 모두 ZeroTier 가상 LAN (예 10.x.x.x/24)에 가입.
+  - host에 wg/tun 안 깔리고 모두 docker container 안에서 (network_mode: service:zerotier).
+  - 학습 PC nginx-lb 컨테이너가 `least_conn` upstream으로 다중 μ/PRM replica 분산 + fail-over.
+  - **자동 cluster discovery**: [scripts/cluster_discovery.py](../scripts/cluster_discovery.py)가 ZeroTier subnet의 모든 IP에 port 8001/8002 prob → 응답한 IP를 자동 분류 → nginx config 생성. env 변경 0.
+  - `ZT_NETWORK_ID`는 git에 저장 X — 명령어 inline env로 전달 (`ZT_NETWORK_ID=... docker compose up -d`).
+  - 핵심 파일: [docker-compose.yml](../docker-compose.yml) (ztncui + zerotier + nginx-lb), [scripts/run-discovery.sh](../scripts/run-discovery.sh), [nginx/inference-cluster.conf](../nginx/inference-cluster.conf) (auto-generated).
 - **가시성**: `PYTHONUNBUFFERED=1` (docker-compose env)로 metrics 실시간 flush. tqdm progress bar는 `\r` carriage return이라 `docker logs`엔 한꺼번에 flush → `tmux attach`로 직접 봐야 실시간.
 
 가중치만 받으면 `00_smoke_prm → 10_label_steps → 01_phase0_diff → 02_phase1_mc → 03_grpo_train`

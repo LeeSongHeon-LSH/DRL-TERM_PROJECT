@@ -38,11 +38,25 @@ def _parse_args():
     else:
         argv = []
     ap = argparse.ArgumentParser()
-    ap.add_argument("--jsonl", default="outputs/stage8_smoke/metrics.jsonl")
+    ap.add_argument("--jsonl", default=None)   # None이면 outputs/*/metrics.jsonl 중 최근 수정된 거
     return ap.parse_args(argv)
 
 
 _args = _parse_args()
+
+
+def _auto_detect_jsonl() -> str:
+    """outputs/*/metrics.jsonl 중 가장 최근 수정된 거 선택."""
+    from pathlib import Path
+    candidates = list(Path("outputs").glob("*/metrics.jsonl"))
+    if not candidates:
+        return "outputs/stage8_smoke/metrics.jsonl"  # fallback (있을 수도 없을 수도)
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+    return str(latest)
+
+
+# args.jsonl이 None이면 자동 탐색
+_DEFAULT_JSONL = _args.jsonl or _auto_detect_jsonl()
 
 
 @st.cache_data(ttl=5)   # 5초 캐시 → auto-refresh
@@ -70,7 +84,7 @@ st.title("PAV-RL 학습 대시보드")
 # --- sidebar
 with st.sidebar:
     st.header("설정")
-    jsonl_path = st.text_input("metrics jsonl 경로", value=_args.jsonl)
+    jsonl_path = st.text_input("metrics jsonl 경로", value=_DEFAULT_JSONL)
     auto_refresh = st.checkbox("5초마다 자동 갱신", value=True)
     last_n = st.slider("최근 N step만 보기 (0 = 전체)", 0, 1000, 0, step=50)
     st.markdown("---")

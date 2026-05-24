@@ -21,10 +21,64 @@
 #   rl_q3.yaml: learning_rate 5e-6 (LoRA 스케일), vllm.colocate: false
 
 services:
+  # ---------------------------- ZTNCUI — 자체 호스팅 ZeroTier Controller + 웹 UI ----------------------------
+  # my.zerotier.com 안 쓰고 자체 controller 운영. http://localhost:3443에서 web UI.
+  # 1. 첫 시작 후 https://localhost:3443 접속 → default password 변경
+  # 2. "Networks" → "Add Network" → 16자리 network ID 자동 발급
+  # 3. 그 ID를 .env의 ZT_NETWORK_ID에 입력 → docker compose restart zerotier
+  # 4. 5070 추론 PC들이 join하면 ZTNCUI Members 탭에서 승인
+  ztncui:
+    image: keynetworks/ztncui:latest
+    container_name: pav-ztncui
+    restart: unless-stopped
+    cap_add: [NET_ADMIN, SYS_ADMIN]
+    devices:
+      - /dev/net/tun
+    volumes:
+      - ./ztncui/etc:/opt/key-networks/ztncui/etc
+      - ./ztncui/ztone:/var/lib/zerotier-one
+    ports:
+      - "3000:3000"           # 웹 UI HTTP (브라우저 접속 → http://localhost:3000)
+      - "9993:9993/udp"       # ZeroTier protocol (다른 노드들이 controller 찾기)
+    environment:
+      - NODE_ENV=production
+      - HTTP_ALL_INTERFACES=yes
+      - ZTNCUI_PASSWD=${ZTNCUI_PASSWD:-changeme}
+
+  # ---------------------------- ZeroTier client (학습 PC 본인) ----------------------------
+  # 자체 controller (ztncui)가 생성한 network에 join.
+  # trainer/nginx-lb가 이 컨테이너의 network namespace를 공유 → 가상 IP로 cluster 호출.
+  zerotier:
+    image: zerotier/zerotier:latest
+    container_name: pav-zerotier
+    cap_add: [NET_ADMIN, SYS_ADMIN]
+    devices:
+      - /dev/net/tun
+    volumes:
+      - ./zerotier:/var/lib/zerotier-one
+    # ZT_NETWORK_ID는 ZTNCUI 웹UI에서 Network 생성 후 .env에 입력. 빈 값이면 컨테이너 idle (의도된 stop).
+    command: ${ZT_NETWORK_ID:-}
+    depends_on: [ztncui]
+    restart: unless-stopped
+
+  # ---------------------------- nginx Load Balancer ----------------------------
+  # μ/PRM cluster 분산 (least_conn + health check + auto fail-over).
+  # ZeroTier network namespace 공유 → 5070 cluster의 가상 IP로 upstream.
+  nginx-lb:
+    image: nginx:alpine
+    container_name: pav-nginx-lb
+    network_mode: "service:zerotier"
+    depends_on: [zerotier]
+    volumes:
+      - ./nginx/inference-cluster.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
+
   trainer:
     build: .
     image: pav-rl:latest
     container_name: pav-trainer
+    network_mode: "service:zerotier"   # ZeroTier network 공유 → nginx-lb를 localhost로 호출
+    depends_on: [zerotier, nginx-lb]
     deploy:
       resources:
         reservations:
@@ -37,13 +91,11 @@ services:
       HF_TOKEN: ${HF_TOKEN:-}
       HF_HUB_ENABLE_HF_TRANSFER: "0"
       WANDB_API_KEY: ${WANDB_API_KEY:-}
-      # tqdm progress bar 실시간 표시 — docker logs가 pipe라 block-buffered 기본값 회피
       PYTHONUNBUFFERED: "1"
-      # PyTorch CUDA allocator — expandable_segments로 fragmentation 완화 (24GB 빡빡한 환경 필수)
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
-      # 분산: 추론 PC의 PRM / μ 엔드포인트 (yaml의 remote.endpoint 값을 override)
-      PRM_ENDPOINT: ${PRM_ENDPOINT:-http://localhost:8002}
-      MU_ENDPOINT: ${MU_ENDPOINT:-http://localhost:8001}
+      # nginx-lb가 같은 network namespace → localhost로 호출. nginx가 ZeroTier cluster로 분산.
+      PRM_ENDPOINT: http://localhost:18002
+      MU_ENDPOINT: http://localhost:18001
     volumes:
       - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
       - ./outputs:/app/outputs
@@ -56,8 +108,6 @@ services:
       --prm-config configs/prm.yaml
       --policy-config configs/policy.yaml
     shm_size: "8g"
-    # 추론 PC와 같은 LAN이면 host network로 두면 endpoint 설정이 단순해짐 (선택).
-    # network_mode: host
 
   # ---------------------------- Streamlit Dashboard (port 8501) ----------------------------
   # 학습 metrics 실시간 시각화. 학습과 독립 — trainer 죽어도 dashboard 살아있음.

@@ -1,0 +1,63 @@
+# 단일 PC swap pipeline 설정 — π / PRM / μ를 한 GPU에서 dynamic swap.
+#
+# 핵심 차이 (vs rl_q3.yaml):
+#   - vllm.gpu_memory_utilization: 0.15 (sleep mode 시 KV cache만 비움, weight는 GPU 유지)
+#   - reward.mode: Q3 그대로 (분포형 advantage)
+#   - pav.method: mc_rollout 사용 가능 (μ swap 지원)
+#
+# 메모리 (24 GB GPU):
+#   π 학습 (vLLM share + grad + GaLore): ~11 GB
+#   PRM 또는 μ swap (한 번에 1개):        ~4 GB
+#   activations + KV cache:               ~5 GB
+#   합 peak:                              ~20 GB ✅
+algorithm: grpo
+
+defaults:
+  prm: prm.yaml
+  policy: policy.yaml
+
+pav:
+  method: mc_rollout         # differential | mc_rollout (둘 다 swap pipeline 지원)
+  K: 16
+
+reward:
+  alpha: 3.0
+  mode: Q3
+  lam: -0.5
+  cvar_alpha: 0.2
+
+grpo:
+  group_size: 4
+  kl_beta: 0.04
+  clip_eps: 0.2
+  learning_rate: 5.0e-7
+  total_steps: 5000
+  warmup_steps: 50
+  gradient_accumulation: 1
+  optim: galore_adamw_8bit_layerwise
+
+data:
+  train:
+    - dataset: gsm8k
+      split: train
+  eval:
+    - dataset: mathnet
+      split: train
+      filters:
+        language: English
+        text_only: true
+        require_final_answer: true
+      subset: 200
+
+vllm:
+  enable_prefix_caching: true
+  colocate: true
+  gpu_memory_utilization: 0.20   # 0.15는 KV cache 음수 (model+activation > 3.6GB) → 0.20 (4.8GB)
+  max_new_tokens: 256
+
+logging:
+  wandb_project:
+  wandb_run_name: swap_smoke
+  log_every: 1
+  eval_every: 100
+  dump_samples_every: 1000

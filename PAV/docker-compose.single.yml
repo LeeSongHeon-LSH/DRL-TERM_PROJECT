@@ -60,8 +60,8 @@ services:
       - ./src:/app/src:ro
       - ./scripts:/app/scripts:ro
     command: >
-      python scripts/03_grpo_train.py
-      --rl-config configs/rl_q3.yaml
+      python scripts/03_grpo_train_swap.py
+      --rl-config configs/rl_q3_swap.yaml
       --prm-config configs/prm.yaml
       --policy-config configs/policy.yaml
     shm_size: "8g"

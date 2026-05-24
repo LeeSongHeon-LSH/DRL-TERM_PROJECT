@@ -37,12 +37,30 @@ x-gpu: &gpu
             capabilities: [gpu]
 
 services:
-  # ---------------------------- μ — vLLM OpenAI API (port 8001) ----------------------------
+  # ---------------------------- ZeroTier sidecar (mesh VPN) ----------------------------
+  # 학습 PC ↔ 이 추론 PC를 공인 IP 없이 연결.
+  # mu-server / prm-server가 이 컨테이너의 network namespace를 공유.
+  zerotier:
+    image: zerotier/zerotier:latest
+    container_name: pav-zerotier
+    cap_add: [NET_ADMIN, SYS_ADMIN]
+    devices:
+      - /dev/net/tun
+    volumes:
+      - ./zerotier:/var/lib/zerotier-one
+    command: ${ZT_NETWORK_ID:-}
+    restart: unless-stopped
+
+  # ---------------------------- μ — vLLM OpenAI API (port 8001 on ZeroTier) ----------------------------
+  # 같은 ZeroTier 가상 LAN의 학습 PC가 이 노드의 가상 IP:8001로 호출.
+  # role=mu 또는 role=prm 중 하나만 띄움 — `docker compose up mu-server` (또는 prm-server)
   mu-server:
     build: .
     image: pav-rl:latest
     container_name: pav-mu-server
     restart: unless-stopped
+    network_mode: "service:zerotier"
+    depends_on: [zerotier]
     <<: *gpu
     environment:
       HF_HOME: /cache/huggingface
@@ -50,27 +68,27 @@ services:
       HF_HUB_ENABLE_HF_TRANSFER: "0"
     volumes:
       - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
-    ports:
-      - "8001:8001"
     command: >
       python -m vllm.entrypoints.openai.api_server
       --model ${MU_MODEL_ID:-Qwen/Qwen2.5-Math-1.5B-Instruct}
       --port 8001
       --host 0.0.0.0
-      --gpu-memory-utilization ${MU_GPU_MEM:-0.6}
-      --max-model-len ${MU_MAX_LEN:-2048}
-      --max-num-seqs ${MU_MAX_NUM_SEQS:-64}
+      --gpu-memory-utilization ${MU_GPU_MEM:-0.85}
+      --max-model-len ${MU_MAX_LEN:-1536}
+      --max-num-seqs ${MU_MAX_NUM_SEQS:-32}
       --dtype bfloat16
       --enable-prefix-caching
       --enforce-eager
     shm_size: "4g"
 
-  # ---------------------------- PRM — FastAPI (port 8002) ----------------------------
+  # ---------------------------- PRM — FastAPI (port 8002 on ZeroTier) ----------------------------
   prm-server:
     build: .
     image: pav-rl:latest
     container_name: pav-prm-server
     restart: unless-stopped
+    network_mode: "service:zerotier"
+    depends_on: [zerotier]
     <<: *gpu
     environment:
       HF_HOME: /cache/huggingface
@@ -82,8 +100,6 @@ services:
       - ./configs:/app/configs:ro
       - ./src:/app/src:ro
       - ./scripts:/app/scripts:ro
-    ports:
-      - "8002:8002"
     command: >
       python scripts/serve_prm_http.py
       --config /app/configs/prm.yaml
