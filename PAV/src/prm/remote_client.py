@@ -56,6 +56,12 @@ class RemotePRM:
             attempt += 1
             try:
                 resp = client.post(url, json=payload)
+                if 500 <= resp.status_code < 600:
+                    # 5xx (nginx upstream 일시 장애 등) — retry
+                    log.warning(f"PRM HTTP {resp.status_code} on {path} (attempt {attempt}, ∞) — retry in {delay}s")
+                    time.sleep(delay)
+                    delay = min(delay * 2, 30.0)
+                    continue
                 if resp.status_code != 200:
                     raise RuntimeError(
                         f"PRM HTTP {resp.status_code} on {path}: {resp.text[:200]}"

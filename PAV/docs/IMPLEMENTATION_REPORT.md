@@ -48,6 +48,14 @@
   - **자동 cluster discovery**: [scripts/cluster_discovery.py](../scripts/cluster_discovery.py)가 ZeroTier subnet의 모든 IP에 port 8001/8002 prob → 응답한 IP를 자동 분류 → nginx config 생성. env 변경 0.
   - `ZT_NETWORK_ID`는 git에 저장 X — 명령어 inline env로 전달 (`ZT_NETWORK_ID=... docker compose up -d`).
   - 핵심 파일: [docker-compose.yml](../docker-compose.yml) (ztncui + zerotier + nginx-lb), [scripts/run-discovery.sh](../scripts/run-discovery.sh), [nginx/inference-cluster.conf](../nginx/inference-cluster.conf) (auto-generated).
+- **MOON (자체 ZT root server) — RELAY → DIRECT 승급** (학습 PC 공인 IP 있을 때):
+  - 문제: ZeroTier default 는 PLANET (ZT Inc. 공용 root 4대, 유럽/미국) 의존 → 둘 다 NAT 뒤면 RELAY 경로 (-1 latency), long-lived TCP 자주 끊김 (Phase 1 K=16 batch generation 중 nginx upstream `prematurely closed connection` → trainer httpx pool 깨진 keepalive 소켓 재사용 → 600s ReadTimeout 무한 stuck).
+  - 해결: ZTNCUI 컨트롤러를 MOON root 로 활용 → 추론 PC 가 학습 PC 의 MOON 으로 직접 peer discovery → NAT punching 성공 → DIRECT 경로 (수 ms).
+  - 셋업:
+    - 학습 PC: `MOON_IP=<공인IP> ./scripts/setup-moon.sh` → `.moon` 파일 생성 + 학습 PC member 의 `moons.d/` 에 자동 배치.
+    - 추론 PC: `ZT_NETWORK_ID=<id> MOON_IP=<공인IP> docker compose -f docker-compose.inference.yml up -d zerotier mu-server prm-server` → [scripts/zt-entrypoint.sh](../scripts/zt-entrypoint.sh) 가 부팅 시 자동 orbit.
+  - 보안: `MOON_IP` 는 env 전달만 (git X), `.moon` 파일은 `zerotier/moons.d/` (gitignored), 서명 secret 은 `ztncui/ztone/moon.json` (gitignored).
+  - 핵심 파일: [scripts/setup-moon.sh](../scripts/setup-moon.sh) (MOON 생성), [scripts/zt-entrypoint.sh](../scripts/zt-entrypoint.sh) (자동 orbit wrapper).
 - **가시성**: `PYTHONUNBUFFERED=1` (docker-compose env)로 metrics 실시간 flush. tqdm progress bar는 `\r` carriage return이라 `docker logs`엔 한꺼번에 flush → `tmux attach`로 직접 봐야 실시간.
 
 가중치만 받으면 `00_smoke_prm → 10_label_steps → 01_phase0_diff → 02_phase1_mc → 03_grpo_train`

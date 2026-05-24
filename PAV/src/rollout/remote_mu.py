@@ -86,6 +86,12 @@ class RemoteMuSampler:
             attempt += 1
             try:
                 resp = client.post(f"{self._endpoint}/v1/completions", json=payload)
+                if 500 <= resp.status_code < 600:
+                    # 5xx (502 Bad Gateway, 503 Service Unavailable, 504 Gateway Timeout) — 일시 장애, retry
+                    log.warning(f"μ HTTP {resp.status_code} (attempt {attempt}, ∞) — retry in {delay}s")
+                    time.sleep(delay)
+                    delay = min(delay * 2, 30.0)
+                    continue
                 if resp.status_code != 200:
                     raise RuntimeError(f"μ HTTP {resp.status_code}: {resp.text[:200]}")
                 data = resp.json()

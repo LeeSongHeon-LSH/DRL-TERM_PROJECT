@@ -48,7 +48,11 @@ services:
       - /dev/net/tun
     volumes:
       - ./zerotier:/var/lib/zerotier-one
+      - ./scripts/zt-entrypoint.sh:/zt-entrypoint.sh:ro
+    entrypoint: ["/zt-entrypoint.sh"]
     command: ${ZT_NETWORK_ID:-}
+    environment:
+      MOON_IP: ${MOON_IP:-}      # set → orbit MOON on startup (derives MOON_ID from network_id)
     restart: unless-stopped
 
   # ---------------------------- μ — vLLM OpenAI API (port 8001 on ZeroTier) ----------------------------

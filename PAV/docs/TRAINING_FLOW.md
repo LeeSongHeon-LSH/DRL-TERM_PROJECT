@@ -371,12 +371,14 @@ flowchart LR
 - 분산 실행 (직접 LAN): `PRM_ENDPOINT=... MU_ENDPOINT=... bash run_train.sh --mode phase1`
 - Docker (단일 PC swap pipeline): `docker compose -f docker-compose.single.yml up -d`
 - Docker (분산 — 학습 PC + nginx-lb): `ZT_NETWORK_ID=<id> docker compose up -d`
-- Docker (분산 — 추론 PC): `ZT_NETWORK_ID=<id> docker compose -f docker-compose.inference.yml up -d zerotier mu-server prm-server`
+- Docker (분산 — 추론 PC, PLANET only): `ZT_NETWORK_ID=<id> docker compose -f docker-compose.inference.yml up -d zerotier mu-server prm-server`
+- Docker (분산 — 추론 PC, MOON 사용 ⭐): `ZT_NETWORK_ID=<id> MOON_IP=<공인IP> docker compose -f docker-compose.inference.yml up -d zerotier mu-server prm-server`
+- MOON 생성 (학습 PC, 1회만): `MOON_IP=<공인IP> ./scripts/setup-moon.sh`
 - ZeroTier cluster auto-discovery: `bash scripts/run-discovery.sh`
 
 ---
 
-## 7. 분산 인프라 (3가지 모드)
+## 7. 분산 인프라 (3가지 모드 + MOON 옵션)
 
 | 모드 | hw | network | 특징 |
 |---|---|---|---|
@@ -384,14 +386,38 @@ flowchart LR
 | **분산 LAN 직접** | 2+ GPU (같은 LAN) | LAN 사설 IP | 학습 PC trainer ↔ 추론 PC (mu-server, prm-server). 사설 IP로 직접 HTTP. step ~50초 |
 | **ZeroTier mesh + nginx-lb** | N GPU (어디든) | ZeroTier 가상 LAN (10.x.x.x) | 다른 위치/NAT 뒤 PC를 가상 LAN으로 묶음. 학습 PC nginx-lb가 다중 replica 분산. cluster_discovery로 자동 노드 분류. 무중단 학습 + fail-over |
 
-ZeroTier 모드 컴포넌트:
+### 7.1 ZeroTier root server 선택 — PLANET only vs PLANET + MOON
+
+| 옵션 | 경로 | latency | long-lived TCP 안정성 | 적용 조건 |
+|---|---|---|---|---|
+| **PLANET only** (default) | 추론 PC ↔ PLANET (유럽/미국) ↔ 학습 PC | 130-250ms RELAY (NAT punching 실패 시) | **낮음** — K=16 batch generation 중 nginx upstream `prematurely closed` 빈발, trainer httpx pool stuck | 공인 IP 0개로 가능 |
+| **PLANET + MOON** ⭐ | 추론 PC ↔ MOON (학습 PC) ↔ 학습 PC LEAF | 수 ms DIRECT (NAT punching 성공률 ↑) | **높음** — 거의 안 끊김 | 학습 PC 공인 IP/DDNS + UDP 9993 포트포워딩 필요 |
+
+### 7.2 ZeroTier 모드 컴포넌트 (PLANET + MOON 권장 구성)
+
 ```
-[학습 PC]                                                     [추론 PC들]
- trainer ──HTTP localhost:18001/18002──► nginx-lb ──► ZeroTier──► mu-server
-                                              │                     prm-server
-                                              ▼                     ...
-                                     least_conn upstream            (5070 × N 가능)
-                                     (auto fail-over)
- ztncui (port 3000)
- (controller + 웹UI, 자체 호스팅)
+[학습 PC, 공인 IP]                                          [추론 PC들 (NAT 뒤 OK)]
+ ┌────────────────────────────────────────────────┐         ┌──────────────────────┐
+ │ trainer ──localhost:18001/18002──► nginx-lb    │         │ zerotier (member)    │
+ │                                       │        │         │  └─ orbit MOON       │
+ │                                       ▼        │         │     (자동, MOON_IP   │
+ │                              least_conn upstream         │      env로 트리거)   │
+ │                              (auto fail-over)  │         │                      │
+ │                                       │        │   ZT    │ mu-server (8001)     │
+ │                                       │     ────┼─DIRECT─┤ prm-server (8002)    │
+ │ pav-zerotier (LEAF)                   │        │  수 ms  │  network_mode:       │
+ │  └─ moons.d/<moonid>.moon (배치됨)    │        │         │   service:zerotier   │
+ │                                       │        │         └──────────────────────┘
+ │ pav-ztncui (controller + MOON root)   │        │                  ▲
+ │  └─ UDP 9993 host 노출 ──── 공인 IP ──┼──────────────── DIRECT peer discovery
+ │  └─ 웹UI port 3000 (admin)            │        │
+ │                                                │
+ └────────────────────────────────────────────────┘
+
+PLANET only 모드: ZT_NETWORK_ID 만 전달, MOON_IP 미설정 → RELAY 경로 → 학습 안정성 낮음.
+MOON 모드:        MOON_IP 추가 전달 → 부팅 시 자동 orbit → DIRECT 승급.
 ```
+
+핵심 스크립트:
+- [scripts/setup-moon.sh](../scripts/setup-moon.sh) — `MOON_IP` env 받아 ZTNCUI 컨트롤러에서 `.moon` 생성 + 학습 PC member 로 복사. IP 는 어떤 commit/log 파일에도 안 들어감.
+- [scripts/zt-entrypoint.sh](../scripts/zt-entrypoint.sh) — 추론 PC `pav-zerotier` 컨테이너의 entrypoint wrapper. `MOON_IP` env 가 set 되면 daemon 준비 후 자동 `zerotier-cli orbit` 호출 (MOON_ID = ZT_NETWORK_ID 앞 10자 자동 derive).
