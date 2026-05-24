@@ -49,7 +49,7 @@ services:
     volumes:
       - ./zerotier:/var/lib/zerotier-one
       - ./scripts/zt-entrypoint.sh:/zt-entrypoint.sh:ro
-    entrypoint: ["/zt-entrypoint.sh"]
+    entrypoint: ["sh", "/zt-entrypoint.sh"]   # sh 직접 호출 — 호스트 파일 execute bit 의존성 제거
     command: ${ZT_NETWORK_ID:-}
     environment:
       MOON_IP: ${MOON_IP:-}      # set → orbit MOON on startup (derives MOON_ID from network_id)
