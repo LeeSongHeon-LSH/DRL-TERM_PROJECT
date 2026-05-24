@@ -24,8 +24,11 @@ if [ -n "${NET_ID}" ]; then
 fi
 
 if [ -n "${MOON_IP:-}" ] && [ -n "${NET_ID}" ]; then
+  # MOON_IP value 자체는 사용 안 함 (orbit 은 MOON_ID + seed peer 만 필요).
+  # 단지 "MOON 활성화 플래그" 역할 — 어떤 non-empty 값이든 OK.
+  # 실제 MOON endpoint 는 PLANET 통해 fetch 되는 .moon 정의에 들어있음.
   MOON_ID=$(echo "${NET_ID}" | cut -c1-10)
-  echo "[zt] MOON orbit requested (id=${MOON_ID}, endpoint configured at <redacted>:9993)"
+  echo "[zt] MOON orbit requested (moon_id=${MOON_ID})"
   zerotier-cli orbit "${MOON_ID}" "${MOON_ID}" || echo "[zt] orbit failed (may already be orbited)"
 fi
 

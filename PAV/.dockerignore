@@ -36,3 +36,9 @@ Dockerfile
 
 # 테스트 (학습/서빙엔 불필요)
 tests/
+
+# ZeroTier / ZTNCUI runtime 디렉토리 (daemon이 root로 생성 → build context 읽기 실패 + 이미지에 secret 굽지 않음)
+zerotier/
+ztncui/
+nginx/
+.hf_cache/
