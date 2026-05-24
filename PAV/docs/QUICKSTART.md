@@ -1,5 +1,12 @@
 # Quickstart — 2 PC 분산 (3090 학습 + 3090 Ti 추론)
 
+> **단일 PC만 있는 경우**: [docker-compose.single.yml](../docker-compose.single.yml) 사용.
+> Phase 0 (μ 안 씀) + PRM local로 24GB GPU에 모두 fit (~20GB 사용, 마진 4GB).
+> 설정: `configs/prm.yaml`에 `mode: local`, `configs/rl_q3.yaml`에 `pav.method: differential` + `vllm.gpu_memory_utilization: 0.20`.
+> 실행: `docker compose -f docker-compose.single.yml up -d --build`
+> 장점: HTTP RPC 0회 → disconnect/stall 없음, 추론 PC 불필요. 단점: Phase 1 K=16 rollout은 메모리 안 들어감 (LoRA 모드라야 가능).
+
+
 현재 default: **π / μ = Qwen2.5-Math-1.5B Full FT**, PRM = Skywork 1.5B int8.
 
 ---

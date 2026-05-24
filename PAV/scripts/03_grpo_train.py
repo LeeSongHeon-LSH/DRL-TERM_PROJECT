@@ -75,9 +75,15 @@ def main():
         )
     )
 
-    # resume_from_checkpoint=True → output_dir에서 최신 checkpoint 자동 탐색.
-    # checkpoint 없으면 fresh start (HF Trainer가 알아서 처리).
-    trainer.train(resume_from_checkpoint=True)
+    # checkpoint 있으면 resume, 없으면 fresh start.
+    # (=True 명시하고 checkpoint 없으면 ValueError 발생하므로 직접 체크)
+    import os
+    ckpt_dir = trainer.args.output_dir
+    has_ckpt = (
+        os.path.isdir(ckpt_dir)
+        and any(d.startswith("checkpoint-") for d in os.listdir(ckpt_dir))
+    )
+    trainer.train(resume_from_checkpoint=has_ckpt if has_ckpt else None)
 
 
 if __name__ == "__main__":

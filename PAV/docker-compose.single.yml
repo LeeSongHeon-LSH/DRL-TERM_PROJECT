@@ -1,0 +1,81 @@
+# 단일 PC 학습 (분산 X). 모든 것 한 GPU에서.
+#
+# === 사용 ===
+#   cp .env.example .env
+#   docker compose -f docker-compose.single.yml up -d --build
+#   docker compose -f docker-compose.single.yml logs -f trainer
+#
+# === 분산과 차이 ===
+#   - 추론 PC 불필요 (mu-server, prm-server X)
+#   - PRM, μ 모두 학습 PC GPU에 직접 로드 (mode: local)
+#   - HTTP RPC 0회 → 가장 빠름, 가장 안정 (network 의존 X)
+#   - 단점: GPU 1개에 모든 것 → 메모리 빡빡
+#
+# === VRAM 예측 (24 GB GPU, 1.5B Full FT, Phase 0 = μ 안 씀) ===
+#   π 1.5B Full FT bf16         ~3 GB
+#   gradients bf16              ~3 GB
+#   GaLore 8bit state           ~1.5 GB
+#   vLLM colocate (gpu_mem 0.20) ~4.8 GB
+#   PRM Skywork 8bit            ~4 GB
+#   activations                  ~3-4 GB
+#   합계                          ~20 GB / 24 GB ✅ 마진 4 GB
+#
+# === Phase 1 (μ K=16 rollout) 단일 PC ===
+#   μ를 추가로 띄우면 +4 GB → 24 GB 한계 초과.
+#   → Phase 1은 분산 (docker-compose.yml + docker-compose.inference.yml) 또는
+#     LoRA 모드 + mu.mode=shared (disable_adapter)로 7B QLoRA에서만 가능.
+#
+# === 설정 변경 (단일 PC용) ===
+#   configs/prm.yaml      → mode: local
+#   configs/policy.yaml   → mu.mode: shared (LoRA만) or 무관 (Phase 0)
+#   configs/rl_q3.yaml    → pav.method: differential (Phase 0, μ 안 씀)
+#                           vllm.gpu_memory_utilization: 0.20
+
+services:
+  trainer:
+    build: .
+    image: pav-rl:latest
+    container_name: pav-trainer-single
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      HF_HOME: /cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      PYTHONUNBUFFERED: "1"
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+      # PRM/MU endpoint은 사용 안 함 (local 모드라). 호환용으로 남겨둠.
+      PRM_ENDPOINT: ${PRM_ENDPOINT:-http://localhost:8002}
+      MU_ENDPOINT: ${MU_ENDPOINT:-http://localhost:8001}
+    volumes:
+      - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
+      - ./outputs:/app/outputs
+      - ./configs:/app/configs:ro
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+    command: >
+      python scripts/03_grpo_train.py
+      --rl-config configs/rl_q3.yaml
+      --prm-config configs/prm.yaml
+      --policy-config configs/policy.yaml
+    shm_size: "8g"
+
+  # ---------------------------- Streamlit Dashboard (port 8501) ----------------------------
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    image: pav-dashboard:latest
+    container_name: pav-dashboard-single
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./outputs:/app/outputs:ro
