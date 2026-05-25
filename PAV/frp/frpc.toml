@@ -11,10 +11,8 @@ serverPort = 7000
 auth.method = "token"
 auth.token = "{{ .Envs.FRPS_TOKEN }}"
 
-# Heartbeat — frps 와 매칭
-transport.heartbeatInterval = 10
-transport.heartbeatTimeout = 30
-transport.tcpKeepalive = 60
+# Heartbeat — frpc 가 frps 와 30초마다 ping (frp v0.61 default 동작)
+# (옛 설정 transport.heartbeatInterval / heartbeatTimeout / tcpKeepalive 는 v0.61 에서 키 이름 바뀜 → default 사용)
 
 log.level = "info"
 log.maxDays = 3
