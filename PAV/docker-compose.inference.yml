@@ -45,9 +45,9 @@ services:
     volumes:
       - ./frp/frpc.toml:/etc/frp/frpc.toml:ro
     environment:
-      FRPS_ADDR: ${FRPS_ADDR:?FRPS_ADDR required — 학습 PC 의 공인 IP 또는 DDNS hostname}
-      FRPS_TOKEN: ${FRPS_TOKEN:?FRPS_TOKEN required — frps 와 일치}
-      NODE_NAME: ${NODE_NAME:?NODE_NAME required — 노드별 고유 라벨 (예: 5070-pc-01)}
+      FRPS_ADDR: "${FRPS_ADDR:?FRPS_ADDR required — 학습 PC 의 공인 IP 또는 DDNS hostname}"
+      FRPS_TOKEN: "${FRPS_TOKEN:?FRPS_TOKEN required — frps 와 일치}"
+      NODE_NAME: "${NODE_NAME:?NODE_NAME required — 노드별 고유 라벨 (예 5070-pc-01)}"
     command: ["-c", "/etc/frp/frpc.toml"]
 
   # ---------------------------- μ — vLLM OpenAI API (port 8001) ----------------------------
