@@ -1,84 +1,61 @@
-# 학습 PC (3090 24 GB) — π trainer 1개 컨테이너.
-# PRM / μ는 추론 PC에서 별도 docker-compose.inference.yml로 띄움.
+# 학습 PC (3090 24 GB) — π trainer + FRP server + dashboard.
+# 추론 PC 들 (NAT 뒤) 이 FRP TCP tunnel 로 mu/PRM 서버 노출.
 #
 # === 사용 ===
 #   cp .env.example .env
-#   # .env에서 PRM_ENDPOINT / MU_ENDPOINT를 추론 PC IP로 설정
-#   docker compose build
-#   docker compose up -d
-#   docker compose logs -f
+#   FRPS_TOKEN=<random-32+chars> FRPS_DASHBOARD_PW=<pw> docker compose up -d --build
 #
-# === VRAM 예측 (24 GB GPU, 1.5B Full FT, μ/PRM은 remote) — 현재 default ===
+# === 컴포넌트 흐름 ===
+#   [추론 PC: 5070] frpc ──outbound TCP──► [학습 PC :7000 frps]
+#                                              │
+#                                              ▼
+#                            frps 가 localhost:18001 (mu), localhost:18002 (PRM) 노출
+#                            여러 추론 PC frpc 는 load balancer group 으로 round-robin
+#                                              │
+#                            trainer 가 http://frps:18001/18002 로 호출
+#                                              │
+#                                              ▼
+#                                       (frps → frpc → 추론 PC mu/PRM)
+#
+# === 추론 PC 추가 ===
+#   추론 PC 에서 docker-compose.inference.yml 띄우면 자동으로 frpc 가 frps 에 등록 →
+#   별도 cluster discovery 스크립트 불필요. frps web dashboard (학습PC:7500) 에서 실시간 확인.
+#
+# === VRAM 예측 (24 GB GPU, 1.5B Full FT, μ/PRM remote) ===
 #   π 1.5B base (bf16)              ~3.1 GB
 #   gradients (bf16)                ~3.1 GB
 #   8-bit Adam states               ~3.1 GB
 #   activations (grad-ckpt, group=8) ~2–3 GB
 #   vLLM colocate (gpu_mem=0.20)    ~4.8 GB
 #   합계                              ~17 GB / 마진 ~7 GB ✅
-#
-# 7B QLoRA로 가려면 configs/policy.yaml에서:
-#   model_id: Qwen/Qwen2.5-Math-7B-Instruct, quantization: 4bit, full_ft: false
-#   rl_q3.yaml: learning_rate 5e-6 (LoRA 스케일), vllm.colocate: false
 
 services:
-  # ---------------------------- ZTNCUI — 자체 호스팅 ZeroTier Controller + 웹 UI ----------------------------
-  # my.zerotier.com 안 쓰고 자체 controller 운영. http://localhost:3443에서 web UI.
-  # 1. 첫 시작 후 https://localhost:3443 접속 → default password 변경
-  # 2. "Networks" → "Add Network" → 16자리 network ID 자동 발급
-  # 3. 그 ID를 .env의 ZT_NETWORK_ID에 입력 → docker compose restart zerotier
-  # 4. 5070 추론 PC들이 join하면 ZTNCUI Members 탭에서 승인
-  ztncui:
-    image: keynetworks/ztncui:latest
-    container_name: pav-ztncui
+  # ---------------------------- FRP Server (TCP tunnel hub) ----------------------------
+  # 추론 PC 들의 frpc 가 7000 으로 outbound 접속 → 학습 PC 에 mu/PRM 가상 endpoint 노출.
+  # 학습 PC 공인 IP 의 router 가 TCP 7000 (control) + 18001~18099 (proxy) 포트포워딩 필요.
+  frps:
+    image: fatedier/frps:v0.61.0
+    container_name: pav-frps
     restart: unless-stopped
-    cap_add: [NET_ADMIN, SYS_ADMIN]
-    devices:
-      - /dev/net/tun
-    volumes:
-      - ./ztncui/etc:/opt/key-networks/ztncui/etc
-      - ./ztncui/ztone:/var/lib/zerotier-one
     ports:
-      - "3000:3000"           # 웹 UI HTTP (브라우저 접속 → http://localhost:3000)
-      - "9993:9993/udp"       # ZeroTier protocol (다른 노드들이 controller 찾기)
+      - "7000:7000/tcp"           # frpc control connection (공인 IP 노출 필수)
+      - "7500:7500/tcp"           # web dashboard (학습 PC 내부망/VPN 만 노출 권장)
+      - "18001:18001/tcp"         # mu cluster (frps→trainer 직접 라우팅용, 모니터링)
+      - "18002:18002/tcp"         # prm cluster
+    volumes:
+      - ./frp/frps.toml:/etc/frp/frps.toml:ro
     environment:
-      - NODE_ENV=production
-      - HTTP_ALL_INTERFACES=yes
-      - ZTNCUI_PASSWD=${ZTNCUI_PASSWD:-changeme}
+      FRPS_TOKEN: ${FRPS_TOKEN:?FRPS_TOKEN required — generate random 32+ chars and pass inline}
+      FRPS_DASHBOARD_PW: ${FRPS_DASHBOARD_PW:-changeme}
+    command: ["-c", "/etc/frp/frps.toml"]
 
-  # ---------------------------- ZeroTier client (학습 PC 본인) ----------------------------
-  # 자체 controller (ztncui)가 생성한 network에 join.
-  # trainer/nginx-lb가 이 컨테이너의 network namespace를 공유 → 가상 IP로 cluster 호출.
-  zerotier:
-    image: zerotier/zerotier:latest
-    container_name: pav-zerotier
-    cap_add: [NET_ADMIN, SYS_ADMIN]
-    devices:
-      - /dev/net/tun
-    volumes:
-      - ./zerotier:/var/lib/zerotier-one
-    # ZT_NETWORK_ID는 ZTNCUI 웹UI에서 Network 생성 후 .env에 입력. 빈 값이면 컨테이너 idle (의도된 stop).
-    command: ${ZT_NETWORK_ID:-}
-    depends_on: [ztncui]
-    restart: unless-stopped
-
-  # ---------------------------- nginx Load Balancer ----------------------------
-  # μ/PRM cluster 분산 (least_conn + health check + auto fail-over).
-  # ZeroTier network namespace 공유 → 5070 cluster의 가상 IP로 upstream.
-  nginx-lb:
-    image: nginx:alpine
-    container_name: pav-nginx-lb
-    network_mode: "service:zerotier"
-    depends_on: [zerotier]
-    volumes:
-      - ./nginx/inference-cluster.conf:/etc/nginx/conf.d/default.conf:ro
-    restart: unless-stopped
-
+  # ---------------------------- π Trainer ----------------------------
+  # frps service name 으로 18001/18002 접근 (docker compose 의 default bridge DNS).
   trainer:
     build: .
     image: pav-rl:latest
     container_name: pav-trainer
-    network_mode: "service:zerotier"   # ZeroTier network 공유 → nginx-lb를 localhost로 호출
-    depends_on: [zerotier, nginx-lb]
+    depends_on: [frps]
     deploy:
       resources:
         reservations:
@@ -93,9 +70,9 @@ services:
       WANDB_API_KEY: ${WANDB_API_KEY:-}
       PYTHONUNBUFFERED: "1"
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
-      # nginx-lb가 같은 network namespace → localhost로 호출. nginx가 ZeroTier cluster로 분산.
-      PRM_ENDPOINT: http://localhost:18002
-      MU_ENDPOINT: http://localhost:18001
+      # frps 컨테이너의 18001/18002 → load balancer group 의 mu/PRM replica 로 라우팅
+      PRM_ENDPOINT: http://frps:18002
+      MU_ENDPOINT: http://frps:18001
     volumes:
       - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
       - ./outputs:/app/outputs

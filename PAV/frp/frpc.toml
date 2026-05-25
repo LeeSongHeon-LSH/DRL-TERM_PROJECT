@@ -1,0 +1,52 @@
+# FRP client — 추론 PC 에서 학습 PC 의 frps 로 outbound tunnel 1개 유지
+#
+# 환경변수 (docker-compose 가 env 로 inject):
+#   FRPS_ADDR    — 학습 PC 의 공인 IP 또는 DDNS hostname (예: myhost.duckdns.org)
+#   FRPS_TOKEN   — frps 와 일치하는 인증 토큰
+#   NODE_NAME    — 이 추론 PC 의 고유 라벨 (예: 5070-pc-01) — proxy name 충돌 방지
+
+serverAddr = "{{ .Envs.FRPS_ADDR }}"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "{{ .Envs.FRPS_TOKEN }}"
+
+# Heartbeat — frps 와 매칭
+transport.heartbeatInterval = 10
+transport.heartbeatTimeout = 30
+transport.tcpKeepalive = 60
+
+log.level = "info"
+log.maxDays = 3
+
+# --- μ vLLM ----------------------------------------------------------
+# Load balancer group: 여러 추론 PC 의 mu 가 같은 group 으로 frps 가 round-robin.
+# 학습 PC 의 localhost:18001 호출 → frps 가 살아있는 mu replica 1개 선택.
+[[proxies]]
+name = "mu-{{ .Envs.NODE_NAME }}"
+type = "tcp"
+localIP = "mu-server"                     # docker compose service name (default bridge)
+localPort = 8001
+remotePort = 18001
+loadBalancer.group = "mu_cluster"
+loadBalancer.groupKey = "{{ .Envs.FRPS_TOKEN }}"
+healthCheck.type = "http"
+healthCheck.path = "/v1/models"
+healthCheck.intervalSeconds = 10
+healthCheck.timeoutSeconds = 3
+healthCheck.maxFailed = 3                  # 3회 실패 시 LB pool 에서 제거
+
+# --- PRM FastAPI ------------------------------------------------------
+[[proxies]]
+name = "prm-{{ .Envs.NODE_NAME }}"
+type = "tcp"
+localIP = "prm-server"
+localPort = 8002
+remotePort = 18002
+loadBalancer.group = "prm_cluster"
+loadBalancer.groupKey = "{{ .Envs.FRPS_TOKEN }}"
+healthCheck.type = "http"
+healthCheck.path = "/health"
+healthCheck.intervalSeconds = 10
+healthCheck.timeoutSeconds = 3
+healthCheck.maxFailed = 3

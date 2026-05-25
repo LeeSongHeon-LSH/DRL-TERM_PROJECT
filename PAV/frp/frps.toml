@@ -1,0 +1,29 @@
+# FRP server — 학습 PC 의 공인 IP 에서 TCP tunnel 받음
+#
+# 환경변수 (docker-compose 가 env 로 inject):
+#   FRPS_TOKEN          — frpc 와 일치하는 인증 토큰 (random 32+ chars)
+#   FRPS_DASHBOARD_PW   — web dashboard admin 비번 (optional)
+
+bindPort = 7000                           # frpc 들이 접속하는 control port (TCP)
+
+# 인증 — token 일치하는 frpc 만 허용
+auth.method = "token"
+auth.token = "{{ .Envs.FRPS_TOKEN }}"
+
+# Dashboard — http://학습PC:7500 — 모든 frpc 상태/트래픽 실시간
+webServer.addr = "0.0.0.0"
+webServer.port = 7500
+webServer.user = "admin"
+webServer.password = "{{ .Envs.FRPS_DASHBOARD_PW }}"
+
+# frpc 가 사용 가능한 remote port 범위 (보안: 18001~18099 만 노출)
+allowPorts = [
+    { start = 18001, end = 18099 }
+]
+
+# 로깅
+log.level = "info"
+log.maxDays = 3
+
+# Heartbeat & keepalive — frps 는 자동으로 frpc 의 heartbeat 받음 (default 30s timeout)
+# v0.61: heartbeat 설정은 frpc 쪽에서만 명시 (transport.heartbeatInterval/Timeout)

@@ -45,20 +45,6 @@ docker compose -f docker-compose.single.yml logs -f trainer
 
 설정은 [configs/rl_q3_swap.yaml](../configs/rl_q3_swap.yaml) 사용 (vllm.gpu_memory_utilization=0.15).
 
-### 분산 학습 vs Swap Pipeline 비교
-
-| | 분산 (2 PC) | Swap Pipeline (단일 PC) |
-|---|---|---|
-| 필요 hw | 2 GPU | **1 GPU** |
-| HTTP RPC | 매 step ~200회 | **0회** |
-| Disconnect 위험 | 자주 (vLLM hang 등) | **없음** |
-| Phase 1 (μ K=16) | ✅ | ✅ |
-| step time | ~50초 (안정 시) | **~60-90초** (swap overhead) |
-| 안정성 | 중간 (네트워크 의존) | **높음** |
-| 학습 PC만 끝남 | ❌ | ✅ |
-
-→ **단일 PC면 swap pipeline 권장.** 학습 안정성 압도적, step time 약간 느림 trade-off.
-
 ### Swap Pipeline 구성 파일
 
 | 파일 | 역할 |
@@ -89,32 +75,86 @@ docker compose -f docker-compose.single.yml logs -f trainer
 
 ## 0. 사전 준비 (두 PC 공통, 1회)
 
-- NVIDIA Container Toolkit 설치:
-  <https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html>
-- 네트워크 옵션 (둘 중 하나):
-  - **같은 LAN** — 사설 IP로 직접 통신 (가장 단순)
-  - **다른 위치 / 공인 IP 없음** — [Section 8: ZeroTier mesh](#8-zerotier-mesh-cluster) (5분 setup, NAT 우회)
+### 0-1) NVIDIA Container Toolkit (두 PC 모두)
+
+설치: <https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html>
+
+### 0-2) 네트워크 모드 선택
+
+- **같은 LAN** — 사설 IP로 직접 통신 (가장 단순). FRP 셋업 불필요 → 바로 [Section 1](#1-추론-pc-3090-ti--5070-등--μ--prm-서빙) 진행.
+- **다른 위치 / 학습 PC 공인 IP 보유, 추론 PC NAT 뒤** — FRP TCP tunnel 사용 → 아래 0-3) 먼저 진행.
+
+### 0-3) FRP server 셋업 (학습 PC, FRP 모드 사용 시만)
+
+**Section 1 (추론 PC) 에서 `FRPS_TOKEN`, `FRPS_ADDR` 입력이 필요한데 — 이건 학습 PC 에서 미리 frps 띄워야 발급됨**. 순서: 학습 PC frps → 추론 PC frpc → 학습 PC trainer.
+
+#### Step 1: 라우터 포트포워딩 + DDNS
+
+- 라우터: **TCP 7000** → 학습 PC LAN IP
+- 방화벽: TCP 7000 inbound 허용
+- (공유기 IP 자주 바뀌면) DDNS: DuckDNS / no-ip 등 무료. 예: `myhost.duckdns.org`
+
+도달성 검증 (외부 LTE 등 **다른 네트워크에서**):
+```bash
+nc -vz <학습PC 공인IP 또는 DDNS> 7000     # "succeeded" 떠야 OK
+```
+
+#### Step 2: Config 검증 — frps 만 임시 부팅 (test token)
+
+```bash
+cd PAV
+cp .env.example .env
+FRPS_TOKEN=test-validation FRPS_DASHBOARD_PW=test docker compose up -d frps
+sleep 3 && docker logs pav-frps
+```
+
+정상 출력:
+```
+frps tcp listen on 0.0.0.0:7000          ← control port 정상
+dashboard listen on 0.0.0.0:7500          ← web UI 정상
+```
+
+문제 시 진단:
+- `json: unknown field "XXX"` — frp 버전 / [frp/frps.toml](../frp/frps.toml) 키 불일치
+- `bind: address already in use` — 7000/7500/18001/18002 점유. `lsof -i :7000`
+- `failed to listen` — Docker 권한
+
+#### Step 3: Test 정리 + 본 frps 기동 (실 토큰)
+
+```bash
+docker stop pav-frps && docker rm pav-frps
+
+# 실 토큰 발급 (random 32 chars) + dashboard 비번
+export FRPS_TOKEN=$(openssl rand -hex 32)
+export FRPS_DASHBOARD_PW=<원하는 비번>
+echo "FRPS_TOKEN=$FRPS_TOKEN"             # ← 이 값 메모. 추론 PC + Section 2 에서 사용
+
+# frps 만 우선 띄움 (trainer 는 Section 2 에서)
+docker compose up -d --build frps
+docker logs pav-frps | tail                # tcp listen 7000 + dashboard 7500 확인
+curl -s localhost:7500 | head              # dashboard HTML 응답 (admin / FRPS_DASHBOARD_PW)
+```
+
+→ 이 시점부터 학습 PC frps 가 추론 PC frpc 접속 대기. Section 1 진행 가능.
 
 ---
 
-## 1. 추론 PC (3090 Ti) — μ + PRM 서빙
+## 1. 추론 PC (3090 Ti / 5070 등) — μ + PRM 서빙
 
 ```bash
 cd PAV
 cp .env.example .env                     # 공통 .env (학습 PC와 동일 템플릿)
 # .env에서 추론 관련: MU_MODEL_ID, MU_GPU_MEM 등 확인 (default OK)
 
-# 같은 LAN 사용:
-docker compose -f docker-compose.inference.yml up -d mu-server prm-server
+# 같은 LAN 사용 (FRP 안 씀, 사설 IP 직접):
+docker compose -f docker-compose.inference.yml up -d --build mu-server prm-server
 
-# ZeroTier mesh — PLANET only (PLANET RELAY 의존, NAT 뚫기 불안정 가능):
-ZT_NETWORK_ID=<16자리> docker compose -f docker-compose.inference.yml up -d zerotier mu-server prm-server
-
-# ZeroTier mesh — MOON 사용 (학습 PC 공인 IP 있는 경우, 권장 ⭐):
-ZT_NETWORK_ID=<16자리> MOON_IP=<학습PC 공인IP> \
-  docker compose -f docker-compose.inference.yml up -d zerotier mu-server prm-server
-# → MOON_IP 가 set 되면 zerotier 컨테이너가 부팅 시 자동 orbit (Section 8.6 참고)
-# → ZTNCUI 웹UI에서 노드 Authorize (Section 8 참고)
+# FRP TCP tunnel (학습 PC 공인 IP 활용, NAT/CGNAT 무관, 권장 ⭐):
+FRPS_ADDR=<학습PC 공인IP/DDNS> FRPS_TOKEN=<frps 와 동일 토큰> NODE_NAME=<유일라벨> \
+  docker compose -f docker-compose.inference.yml up -d --build
+# → frpc 가 학습 PC frps (port 7000) 로 outbound TCP 1개 유지
+# → mu/PRM 이 학습 PC localhost:18001/18002 에 노출
+# → 여러 추론 PC 띄우면 NODE_NAME 만 다르게 (예: 5070-pc-01, 02, ...) — frps 가 자동 LB
 ```
 
 상태 확인:
@@ -145,24 +185,28 @@ MU_ENDPOINT=http://192.168.1.10:8001
 
 기동:
 ```bash
-docker compose up -d trainer dashboard           # zerotier/nginx-lb 안 띄움
+# 같은 LAN 이라 frps tunnel 불필요 — trainer + dashboard 만 (frps 안 띄움)
+docker compose up -d --build trainer dashboard
 docker compose logs -f trainer
 ```
 
-### 옵션 B: ZeroTier mesh (nginx-lb 자동 분산)
+### 옵션 B: FRP TCP tunnel (학습 PC 공인 IP, 추론 PC NAT 뒤)
 
-`.env`에 nginx-lb endpoint (default 그대로):
+`.env`에 frps endpoint (default 그대로 — `frps` 컨테이너의 18001/18002):
 ```bash
-PRM_ENDPOINT=http://localhost:18002
-MU_ENDPOINT=http://localhost:18001
+PRM_ENDPOINT=http://frps:18002
+MU_ENDPOINT=http://frps:18001
 ```
 
 기동:
 ```bash
-ZT_NETWORK_ID=<16자리> docker compose up -d        # zerotier + nginx-lb + trainer + dashboard
+# 사전: 라우터 포트포워딩 TCP 7000 → 학습 PC LAN IP
+FRPS_TOKEN=<random-32+chars> docker compose up -d --build   # frps + trainer + dashboard
+# 추론 PC 에서 docker compose -f docker-compose.inference.yml up -d (위 Section 1) →
+# frpc 가 자동으로 frps 에 등록, mu/PRM 가용 → 학습 즉시 시작 가능
 
-# 추론 PC들 ZeroTier 가입 후 자동 cluster discovery:
-bash scripts/run-discovery.sh                      # port 8001/8002 probing → nginx config 자동 생성
+# FRP dashboard — 모든 추론 PC 상태 실시간
+# http://localhost:7500 (admin / FRPS_DASHBOARD_PW)
 ```
 
 VRAM 점유: **~18 GB / 24 GB** (π 1.5B Full FT + GaLore 8bit layerwise + vLLM colocate 0.30 = 7.2 GB).
@@ -179,13 +223,11 @@ VRAM 점유: **~18 GB / 24 GB** (π 1.5B Full FT + GaLore 8bit layerwise + vLLM 
 | 학습 PC 로그 follow | `docker compose logs -f trainer` |
 | PRM health (직접) | `curl http://<inference-ip>:8002/health` |
 | μ vLLM 모델 목록 (직접) | `curl http://<inference-ip>:8001/v1/models` |
-| **ZeroTier 자기 가상 IP** | `docker exec pav-zerotier zerotier-cli listnetworks` |
-| **ZeroTier peer 경로 (RELAY vs DIRECT)** | `docker exec pav-zerotier zerotier-cli peers` |
-| **MOON 등록 확인** | `docker exec pav-zerotier zerotier-cli listmoons` |
-| **MOON 수동 orbit (1회만, MOON_IP 없이 띄운 경우)** | `docker exec pav-zerotier zerotier-cli orbit <MOON_ID> <MOON_ID>` (MOON_ID = ZT_NETWORK_ID 앞 10자) |
-| **ZTNCUI 웹UI** | `http://<학습PC IP>:3000` (admin / ZTNCUI_PASSWD) |
-| **Cluster auto-discovery** | `bash scripts/run-discovery.sh` (nginx config 자동 생성) |
-| **nginx-lb를 통한 PRM 호출** | `curl http://localhost:18002/health` (학습 PC에서) |
+| **FRP server 로그** | `docker logs -f pav-frps` (frpc 접속/health/LB 상태) |
+| **FRP dashboard** | `http://<학습PC>:7500` (admin / FRPS_DASHBOARD_PW) — 모든 추론 PC 실시간 |
+| **FRP client 로그 (추론 PC)** | `docker logs -f pav-frpc` (학습 PC 와의 tunnel 상태) |
+| **frps 통한 mu/PRM 호출** | `curl http://localhost:18001/v1/models` / `curl http://localhost:18002/health` (학습 PC 에서) |
+| **추론 PC mu/PRM 직접** | `curl http://<추론PC LAN IP>:8001/v1/models` (같은 LAN 일 때) |
 | GPU 모니터링 | `nvidia-smi -l 1` |
 | 학습 중단 | `docker compose stop trainer` |
 | 학습 재개 (체크포인트에서) | trainer 컨테이너 재시작 (`resume_from_checkpoint=True` 자동) |
@@ -264,7 +306,9 @@ MU_GPU_MEM=0.6                     # vLLM KV cache (default 0.25 → 0.6)
 | 학습 진행률(`tqdm` progress bar)이 docker logs에 안 보임 | `docker logs`는 line-based(`\n`만 새 줄)라 tqdm의 `\r` 갱신이 학습 끝에 한 번에 flush됨. `tmux attach -t pav`로 직접 보면 실시간 보임. metrics(`logging_steps`)는 정상 출력 |
 | μ 응답이 비어있음 | `policy.yaml`의 `mu.step_stop`이 정책 출력 boundary와 안 맞을 수 있음. `["\n\n", "\n"]` 둘 다 시도 |
 | 추론 PC vLLM 시작 시 OOM | `.env.inference.example`의 `MU_GPU_MEM` 낮추거나 `MU_MAX_LEN` 줄임 (default 4096) |
-| trainer가 `μ HTTP 502` / `ReadTimeout` 반복 (600s 마다 1회), httpx pool 깨진 keepalive 소켓 재사용 | ZeroTier 가 PLANET RELAY 경로 (peers 출력에 `-1 RELAY`) 라서 long-lived TCP 가 끊김. Section 8.6 의 MOON 셋업으로 학습 PC ↔ 추론 PC DIRECT 승급. 임시 복구: trainer 컨테이너 재시작 (fresh socket, checkpoint resume) |
+| trainer가 `μ HTTP 502` / `ReadTimeout` 반복 (600s 마다 1회), httpx pool 깨진 keepalive 소켓 재사용 | (이전 ZeroTier RELAY 시절 이슈 — FRP 도입으로 거의 발생 안 함). 발생 시: FRP dashboard 에서 frpc 연결 상태 확인 → 죽었으면 추론 PC 의 frpc 컨테이너 재시작. trainer 의 `_reset_client()` 로직이 retry 1~2회 안에 회복 |
+| frpc 가 frps 에 접속 못함 (`dial tcp: i/o timeout` 또는 `connection refused`) | 학습 PC 라우터의 TCP 7000 포트포워딩 안 됨, 또는 학습 PC 방화벽 inbound 차단. 외부에서 `nc -vz <학습PC 공인IP> 7000` 으로 도달성 확인 |
+| FRPS_TOKEN mismatch (`login to server failed: authorization failed`) | frpc 와 frps 의 토큰 불일치. 둘 다 같은 `FRPS_TOKEN=` 명령어 inline env 로 띄움 |
 
 ---
 
@@ -407,159 +451,91 @@ uv run python scripts/plot_metrics.py
 
 ---
 
-## 8. ZeroTier mesh cluster (5070 × N대 추론)
+## 8. FRP TCP tunnel cluster (5070 × N대 추론, 학습 PC 공인 IP 활용)
 
-학습 PC와 N대의 추론 PC가 다른 네트워크에 있어도 ZeroTier 가상 LAN으로 묶어 분산 학습.
+학습 PC가 공인 IP 1개 보유 + 추론 PC들이 NAT/CGNAT 뒤에 있어도 FRP single persistent TCP tunnel 로 묶어 분산 학습.
 
-### 1) ZeroTier network 생성 (자체 호스팅, ZTNCUI)
+> **이전: ZeroTier mesh + nginx-lb (폐기)** — 둘 다 NAT 뒤면 PLANET RELAY 의 packet loss 로 K=16 long-lived TCP 자주 끊김. MOON root 자체 호스팅도 NAT punching 협상 실패. 학습 PC 공인 IP 있으면 FRP 가 단순/안정.
 
-**자체 controller (ZTNCUI, zerotier.com 로그인 불필요)**
+### 1) 사전 작업 + frps 기동 (학습 PC)
 
-1. 학습 PC에서 controller만 먼저 띄움 (ZT_NETWORK_ID 없이 OK):
-   ```bash
-   docker compose up -d ztncui
-   ```
-2. 브라우저로 `http://<학습 PC IP>:3000` 접속
-3. 로그인: `admin` / [.env](../.env)의 `ZTNCUI_PASSWD` (default `changeme` — 첫 접속 시 변경)
-4. **Networks** → **Add Network** → 16자리 ID 자동 발급 (예: `xxxxxxxxxxxxxxxx`)
-5. **그 ID는 .env에 저장하지 않음** — git push 시 노출 회피.
-   대신 명령어 inline env로 전달:
-   ```bash
-   # 학습 PC에서 (zerotier + nginx-lb + trainer + dashboard)
-   ZT_NETWORK_ID=xxxxxxxxxxxxxxxx docker compose up -d
+→ [Section 0-3 (FRP server 셋업)](#0-3-frp-server-셋업-학습-pc-frp-모드-사용-시만) 참고. 라우터 포트포워딩 + config 검증 + 실 토큰 기동 단계까지 거기서 다룸.
 
-   # 추론 PC에서 (zerotier + mu-server [+ prm-server])
-   ZT_NETWORK_ID=xxxxxxxxxxxxxxxx docker compose -f docker-compose.inference.yml up -d zerotier mu-server
-   ```
+### 2) 학습 PC trainer 시작
 
-> 대안: `export ZT_NETWORK_ID=xxxxxxxxxxxxxxxx` 를 shell rc/세션에 한 번 하면 매번 inline 안 줘도 됨.
-
-### 2) 학습 PC
-
+frps 까지 띄운 상태에서 trainer + dashboard 추가:
 ```bash
-docker compose up -d              # zerotier + nginx-lb + trainer + dashboard
-# 첫 시작 시 zerotier 컨테이너가 network 가입 시도 → web콘솔에서 승인 클릭
+FRPS_TOKEN=<위 0-3 에서 발급한 토큰> docker compose up -d --build trainer dashboard
+docker compose logs -f trainer
 ```
 
-ZeroTier 가입 확인:
-```bash
-docker exec pav-zerotier zerotier-cli listnetworks
-# → 10.144.x.x 같은 가상 IP 부여됨
-```
+이 시점: trainer 시작되지만 추론 PC 등록 전이라 첫 mu/PRM 호출에서 502 → retry 모드. 다음 step (3) 끝나면 자동 학습 시작.
 
 ### 3) 5070 추론 PC (× N대)
 
-각 PC에서:
+각 PC에서 (NODE_NAME 만 다르게):
 ```bash
 git clone <repo> && cd PAV
-echo "ZT_NETWORK_ID=a1b2c3d4e5f6a1b2" >> .env
-# μ replica로 띄울 노드:
-docker compose -f docker-compose.inference.yml up -d zerotier mu-server
-# 또는 PRM replica로 띄울 노드:
-docker compose -f docker-compose.inference.yml up -d zerotier prm-server
+cp .env.example .env                  # MU_MODEL_ID, MU_GPU_MEM 등 조정
+
+# 학습 PC 의 frps 토큰 (학습 PC 에서 띄울 때 사용한 동일 값) 와 공인 IP/DDNS,
+# 노드 고유 라벨 inline 전달
+FRPS_ADDR=myhost.duckdns.org FRPS_TOKEN=<학습 PC 와 동일 토큰> NODE_NAME=5070-pc-01 \
+  docker compose -f docker-compose.inference.yml up -d --build
 ```
 
-zerotier.com 웹콘솔에서 각 노드 승인. 가상 IP 받음 (예: 10.144.1.11, 10.144.1.12, ...).
-
-### 4) Cluster auto-discovery (env 변경 0, 자동 분류)
-
-각 노드의 port를 prob해서 어떤 서버가 있는지 자동 식별:
-
+확인:
 ```bash
-# 학습 PC에서 — 추론 PC들이 ZeroTier에 가입 + Authorize 끝난 후
-bash scripts/run-discovery.sh
+docker logs pav-frpc                  # "start proxy success" 보이면 학습 PC 와 tunnel 성공
+docker logs pav-mu-server | tail      # vLLM "Application startup complete"
+docker logs pav-prm-server | tail     # uvicorn "Application startup complete"
 ```
 
-스크립트 동작:
-1. `pav-zerotier` 컨테이너에서 학습 PC ZeroTier IP 자동 추출
-2. 같은 subnet의 모든 IP (253개) 병렬 prob (`8001/v1/models` → μ, `8002/health` → PRM)
-3. 응답한 IP들로 [nginx/inference-cluster.conf](../nginx/inference-cluster.conf) 자동 생성
-4. `nginx-lb` 컨테이너 자동 재시작 → 학습 trainer가 즉시 새 cluster 사용
+### 4) Cluster — 자동 등록 + load balancing
 
-**노드 변경 시 (PC 추가/제거)**: `bash scripts/run-discovery.sh` 한 번 더 실행하면 끝.
+별도 discovery 스크립트 불필요. frpc 가 frps 에 등록하면 자동으로 `mu_cluster` / `prm_cluster` group 에 추가됨.
 
-NODE_ROLE 등 환경변수 입력 불필요 — port 응답 기준.
+frps 의 자동 처리:
+- **Round-robin** — 학습 PC `localhost:18001` 요청 → 살아있는 mu replica 중 1개 선택
+- **Health check** — 매 10초 `/v1/models` (mu), `/health` (prm) HTTP probe. 3회 실패 시 LB pool 에서 자동 제거
+- **자동 복구** — 죽었던 frpc 가 다시 올라오면 health 통과 후 자동 pool 추가
+- **노드 추가/제거** — 새 추론 PC 띄우거나 끄면 frps 가 즉시 반영, 학습 PC 쪽 무수정
+
+**노드 변경 시**: 그냥 추론 PC 에서 docker compose up/down 하면 끝. nginx config 갱신 같은 작업 0.
 
 ### 5) 학습 시작
 
 ```bash
-ZT_NETWORK_ID=<16자리> docker compose up -d
+FRPS_TOKEN=<같은 토큰> docker compose up -d
 docker compose logs -f trainer
 ```
 
-학습 PC trainer가 `localhost:18001/18002` → nginx-lb → ZeroTier cluster.
+학습 PC trainer가 `http://frps:18001/18002` → frps → 살아있는 추론 PC frpc → mu/PRM.
+
+### 6) FRP Dashboard (운영 시각화)
+
+```
+http://<학습PC>:7500
+(로그인: admin / FRPS_DASHBOARD_PW)
+```
+
+- 모든 frpc 의 connection 상태 / 트래픽 / 에러 / health 실시간
+- proxy group 별 현황 (`mu_cluster` 에 몇 replica 살아있나)
 
 ### 장점
 
-- 공인 IP 0개로 N대 cluster 운영
-- 1대 5070 죽어도 fail-over (nginx least_conn)
+- 공인 IP **0개의 추론 PC** 들로 cluster 운영 (학습 PC 만 공인 IP 필요)
+- 1대 추론 PC 죽어도 fail-over (frps native load balancing)
 - 추론 throughput N배 → 학습 시간 N배 단축
 - step time ~50초 → **~5-10초** 가능 (10 replica 기준)
+- 학습 PC ↔ 추론 PC 단일 영구 TCP, multiplexed — ZT RELAY 의 packet loss 문제 사라짐
 
-### 6) (선택, **강력 권장**) MOON 셋업 — RELAY → DIRECT 승급
+### 보안
 
-**문제**: ZeroTier default 셋업은 PLANET(ZT Inc. 공용 root, 유럽/미국 4대)에 의존. 둘 다 NAT 뒤면 P2P 협상 실패 → RELAY 경로 (`zerotier-cli peers`에 `-1 RELAY`). 학습 중 K=16 batch generation 같은 long-lived TCP가 자주 끊기고 trainer 가 httpx pool 깨진 keepalive 소켓 재사용해서 무한 stuck.
-
-**해결**: 학습 PC 가 공인 IP (또는 DDNS) 있으면 **MOON (자체 root server)** 띄움. 추론 PC 가 학습 PC 의 MOON 으로 직접 peer discovery → NAT punching 빠르게 성공 → **DIRECT 경로** 승급 (수 ms).
-
-**계층 비교**:
-```
-PLANET only (default)              PLANET + MOON (권장)
-─────────────────────              ──────────────────────
-추론 PC ──→ PLANET(유럽) ←── 학습  추론 PC ──→ MOON(학습PC) ←── 학습 PC LEAF
-        130-250ms RELAY                    수 ms DIRECT
-```
-
-**전제 조건**:
-- 학습 PC 가 공인 IP 또는 DDNS hostname (예: DuckDNS 무료)
-- 학습 PC 의 UDP `9993` 포트가 공인 IP 로 도달 (공유기 포트포워딩 + 방화벽 인바운드 허용)
-- `pav-ztncui` 컨테이너가 호스트 UDP 9993 매핑 (docker-compose.yml default ✓)
-
-**셋업 (학습 PC)**:
-
-```bash
-# 1. .moon 파일 생성 (IP 는 env 로 받음, 어떤 commit/log 파일에도 안 들어감)
-MOON_IP=<공인IP> ./scripts/setup-moon.sh
-
-# 2. 학습 PC 컨테이너 재시작 (zerotier 가 moons.d/ 로드)
-docker stop pav-trainer pav-nginx-lb pav-zerotier && \
-  docker start pav-zerotier && sleep 5 && \
-  docker start pav-nginx-lb pav-trainer
-
-# 3. 학습 PC member 가 MOON 등록 확인
-docker exec pav-zerotier zerotier-cli listmoons   # moon_id 출력되면 OK
-```
-
-**적용 (추론 PC)** — `MOON_IP` 만 명령어에 추가:
-
-```bash
-ZT_NETWORK_ID=<16자리> MOON_IP=<학습PC 공인IP> \
-  docker compose -f docker-compose.inference.yml up -d zerotier mu-server prm-server
-```
-
-→ [scripts/zt-entrypoint.sh](../scripts/zt-entrypoint.sh) 가 zerotier 부팅 시 자동 orbit (MOON_ID = ZT_NETWORK_ID 앞 10자).
-
-**검증**:
-
-```bash
-# 추론 PC 에서 (orbit 후 30초 ~ 2분 기다림)
-docker exec pav-zerotier zerotier-cli peers
-
-# 기대 출력 (MOON 행이 DIRECT, latency 수 ms):
-# <MOON_ID 10자> - MOON 25 DIRECT ... <공인IP>/9993
-# <학습PC member 10자> - LEAF 30 DIRECT ... <학습PC ZT IP>/9993   ← 학습 PC member 도 DIRECT 승급
-```
-
-**보안**:
-- `MOON_IP` 는 환경변수로만 전달 — `.env` 에 저장 X, git 에 안 올라감
-- `.moon` 파일은 binary 에 IP 들어가지만 `zerotier/moons.d/` 가 gitignored
-- ZTNCUI 컨트롤러의 `moon.json` 은 서명 secret 포함 — `ztncui/` 디렉토리도 gitignored
-- 자세히: [scripts/setup-moon.sh](../scripts/setup-moon.sh), [scripts/zt-entrypoint.sh](../scripts/zt-entrypoint.sh)
-
-**효과**:
-- PLANET RELAY (150ms+) → MOON DIRECT (수 ms)
-- nginx upstream `prematurely closed connection` 거의 사라짐
-- trainer 의 600s ReadTimeout stuck 해결
+- `FRPS_TOKEN` 은 .env 저장 X, 명령어 inline env (예: `FRPS_TOKEN=... docker compose up -d`)
+- frps 토큰 일치 안 하는 frpc 는 거부 (인증 실패)
+- (선택) frps 에 TLS 적용 가능 (`transport.tls.enable = true`)
+- frp dashboard 는 학습 PC 내부망/VPN 만 노출 권장 (admin 비밀번호 noise 보호)
 
 ---
 

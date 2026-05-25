@@ -40,22 +40,15 @@
   - Phase 1 K=16까지 단일 GPU에서 가능. step time ~60-90초 (분산 50초 대비 swap overhead).
   - HTTP RPC 0회 → disconnect/네트워크 stall 위험 없음.
   - 핵심 파일: [src/swap/orchestrator.py](../src/swap/orchestrator.py), [src/swap/trainer.py](../src/swap/trainer.py), [scripts/03_grpo_train_swap.py](../scripts/03_grpo_train_swap.py), [docker-compose.single.yml](../docker-compose.single.yml).
-- **ZeroTier mesh cluster** (NAT 우회 + 다중 추론 노드, 공인 IP 0개로 가능):
-  - ZTNCUI 자체 호스팅 (controller + 웹UI port 3000) — zerotier.com 로그인 불필요.
-  - 학습 PC와 추론 PC(들)이 모두 ZeroTier 가상 LAN (예 10.x.x.x/24)에 가입.
-  - host에 wg/tun 안 깔리고 모두 docker container 안에서 (network_mode: service:zerotier).
-  - 학습 PC nginx-lb 컨테이너가 `least_conn` upstream으로 다중 μ/PRM replica 분산 + fail-over.
-  - **자동 cluster discovery**: [scripts/cluster_discovery.py](../scripts/cluster_discovery.py)가 ZeroTier subnet의 모든 IP에 port 8001/8002 prob → 응답한 IP를 자동 분류 → nginx config 생성. env 변경 0.
-  - `ZT_NETWORK_ID`는 git에 저장 X — 명령어 inline env로 전달 (`ZT_NETWORK_ID=... docker compose up -d`).
-  - 핵심 파일: [docker-compose.yml](../docker-compose.yml) (ztncui + zerotier + nginx-lb), [scripts/run-discovery.sh](../scripts/run-discovery.sh), [nginx/inference-cluster.conf](../nginx/inference-cluster.conf) (auto-generated).
-- **MOON (자체 ZT root server) — RELAY → DIRECT 승급** (학습 PC 공인 IP 있을 때):
-  - 문제: ZeroTier default 는 PLANET (ZT Inc. 공용 root 4대, 유럽/미국) 의존 → 둘 다 NAT 뒤면 RELAY 경로 (-1 latency), long-lived TCP 자주 끊김 (Phase 1 K=16 batch generation 중 nginx upstream `prematurely closed connection` → trainer httpx pool 깨진 keepalive 소켓 재사용 → 600s ReadTimeout 무한 stuck).
-  - 해결: ZTNCUI 컨트롤러를 MOON root 로 활용 → 추론 PC 가 학습 PC 의 MOON 으로 직접 peer discovery → NAT punching 성공 → DIRECT 경로 (수 ms).
-  - 셋업:
-    - 학습 PC: `MOON_IP=<공인IP> ./scripts/setup-moon.sh` → `.moon` 파일 생성 + 학습 PC member 의 `moons.d/` 에 자동 배치.
-    - 추론 PC: `ZT_NETWORK_ID=<id> MOON_IP=<공인IP> docker compose -f docker-compose.inference.yml up -d zerotier mu-server prm-server` → [scripts/zt-entrypoint.sh](../scripts/zt-entrypoint.sh) 가 부팅 시 자동 orbit.
-  - 보안: `MOON_IP` 는 env 전달만 (git X), `.moon` 파일은 `zerotier/moons.d/` (gitignored), 서명 secret 은 `ztncui/ztone/moon.json` (gitignored).
-  - 핵심 파일: [scripts/setup-moon.sh](../scripts/setup-moon.sh) (MOON 생성), [scripts/zt-entrypoint.sh](../scripts/zt-entrypoint.sh) (자동 orbit wrapper).
+- **FRP TCP tunnel cluster** (NAT 우회 + 다중 추론 노드, 학습 PC 공인 IP 1개로 N대 운영):
+  - 학습 PC = FRP server (`frps`, port 7000 listen, 공인 IP 노출). 추론 PC (NAT 뒤) = FRP client (`frpc`, outbound TCP 만).
+  - **추론 PC NAT/CGNAT/방화벽 무관** — frpc 가 outbound 만 함. 공인 IP 0개의 PC 들로 cluster 구성 가능.
+  - **Single persistent TCP** — frpc ↔ frps 사이 1개 long-lived TCP 안에서 모든 mu/PRM 요청 multiplexing. ZT 의 매 request 새 TCP + RELAY 패킷 손실 문제 사라짐.
+  - **Native cluster load balancing** — 여러 추론 PC frpc 가 같은 `loadBalancer.group` 으로 frps 에 등록 → frps 가 round-robin + per-replica HTTP health check (10s interval, 3 fail = pool 제거). 별도 cluster discovery 스크립트 불필요.
+  - **FRP dashboard** (`http://학습PC:7500`) — 모든 frpc 상태/트래픽/health 실시간 시각화.
+  - `FRPS_TOKEN`, `FRPS_ADDR`, `NODE_NAME` 모두 git 저장 X — 명령어 inline env (예: `FRPS_TOKEN=<random> docker compose up -d`).
+  - 핵심 파일: [docker-compose.yml](../docker-compose.yml) (frps), [docker-compose.inference.yml](../docker-compose.inference.yml) (frpc), [frp/frps.toml](../frp/frps.toml), [frp/frpc.toml](../frp/frpc.toml).
+  - **(이전 ZeroTier + MOON 시도 → 폐기됨)** — 두 PC 모두 NAT 뒤일 때 PLANET RELAY 의 패킷 손실로 K=16 long-lived TCP 자주 끊김. MOON root 자체 호스팅도 NAT punching 협상 실패. 학습 PC 공인 IP 보유 시 FRP 가 단순/안정.
 - **가시성**: `PYTHONUNBUFFERED=1` (docker-compose env)로 metrics 실시간 flush. tqdm progress bar는 `\r` carriage return이라 `docker logs`엔 한꺼번에 flush → `tmux attach`로 직접 봐야 실시간.
 
 가중치만 받으면 `00_smoke_prm → 10_label_steps → 01_phase0_diff → 02_phase1_mc → 03_grpo_train`

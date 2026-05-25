@@ -1,31 +1,28 @@
-# 추론 PC (3090 Ti 24 GB) — μ vLLM server + PRM HTTP server
+# 추론 PC (3090 Ti / 5070 등) — μ vLLM + PRM HTTP + FRP client (학습 PC 로 outbound tunnel)
 #
 # === 사용 ===
-#   cp .env.inference.example .env
-#   docker compose -f docker-compose.inference.yml build
-#   docker compose -f docker-compose.inference.yml up -d
-#   docker compose -f docker-compose.inference.yml logs -f
+#   cp .env.example .env
+#   FRPS_ADDR=<학습PC 공인IP/DDNS> FRPS_TOKEN=<frps 와 동일 토큰> NODE_NAME=<유일라벨> \
+#     docker compose -f docker-compose.inference.yml up -d --build
 #
-# === 노출 포트 ===
-#   8001 — μ vLLM OpenAI API   (Qwen/Qwen2.5-Math-7B-Instruct frozen base)
+# === NAT 친화 ===
+#   - 추론 PC 는 outbound TCP 만 (학습 PC :7000). 추론 PC NAT/CGNAT 무관.
+#   - ZeroTier / MOON / NAT punching 모두 불필요. FRP single persistent TCP.
+#
+# === Cluster ===
+#   여러 추론 PC 띄울 때 — NODE_NAME 만 다르게 (예: NODE_NAME=5070-pc-01, 02, ...).
+#   frps 가 같은 group ("mu_cluster", "prm_cluster") 으로 자동 round-robin + health check.
+#
+# === 노출 포트 (이 컨테이너 내부, frpc 가 tunnel 로 학습 PC 로 노출) ===
+#   8001 — μ vLLM OpenAI API   (Qwen/Qwen2.5-Math-1.5B-Instruct frozen base)
 #   8002 — PRM FastAPI         (Skywork/Skywork-o1-Open-PRM-Qwen-2.5-1.5B int8)
 #
-# === VRAM 예측 (24 GB GPU, 1.5B μ + PRM 1.5B int8 기준, Phase 1 K=16 batch) ===
-#   μ vLLM       ~17 GB  (gpu-memory-utilization 0.7, 1.5B bf16 + KV cache 14.4 GB)
-#   PRM int8     ~4  GB  (bnb 8bit)
-#   합계         ~21 GB  / 마진 ~3 GB
-#
-# === vLLM 안정성 옵션 (Phase 1 K=16 stress 회피) ===
-#   --max-model-len 2048    : sequence당 KV cache 절반 (4096→2048)
-#   --max-num-seqs 64       : concurrent seq 제한, queue로 안정
-#   --enforce-eager         : CUDA graph off, fragmentation 누적 회피
+# === VRAM 예측 (24 GB GPU, 1.5B μ + PRM 1.5B int8, K=16 batch) ===
+#   μ vLLM       ~17 GB  (gpu-memory-utilization 0.85)
+#   PRM int8     ~4  GB
+#   합계         ~21 GB / 마진 ~3 GB
 #
 # 7B μ로 확장 시: MU_MODEL_ID=Qwen/Qwen2.5-Math-7B-Instruct, MU_GPU_MEM=0.65
-#   → μ 15.6 GB + PRM 4 GB = 19.6 GB / 마진 4.4 GB
-#
-# === 학습 PC가 호출하는 endpoint ===
-#   PRM_ENDPOINT=http://<이 PC IP>:8002
-#   MU_ENDPOINT =http://<이 PC IP>:8001
 
 x-gpu: &gpu
   deploy:
@@ -37,34 +34,29 @@ x-gpu: &gpu
             capabilities: [gpu]
 
 services:
-  # ---------------------------- ZeroTier sidecar (mesh VPN) ----------------------------
-  # 학습 PC ↔ 이 추론 PC를 공인 IP 없이 연결.
-  # mu-server / prm-server가 이 컨테이너의 network namespace를 공유.
-  zerotier:
-    image: zerotier/zerotier:latest
-    container_name: pav-zerotier
-    cap_add: [NET_ADMIN, SYS_ADMIN]
-    devices:
-      - /dev/net/tun
-    volumes:
-      - ./zerotier:/var/lib/zerotier-one
-      - ./scripts/zt-entrypoint.sh:/zt-entrypoint.sh:ro
-    entrypoint: ["sh", "/zt-entrypoint.sh"]   # sh 직접 호출 — 호스트 파일 execute bit 의존성 제거
-    command: ${ZT_NETWORK_ID:-}
-    environment:
-      MOON_IP: ${MOON_IP:-}      # set → orbit MOON on startup (derives MOON_ID from network_id)
+  # ---------------------------- FRP Client (학습 PC 로 outbound tunnel) ----------------------------
+  # 학습 PC frps 에 outbound TCP 1개 — mu/PRM 을 학습 PC localhost:18001/18002 에 노출.
+  # 추론 PC NAT 뒤든 CGNAT 뒤든 무관 — outbound 만 함.
+  frpc:
+    image: fatedier/frpc:v0.61.0
+    container_name: pav-frpc
     restart: unless-stopped
+    depends_on: [mu-server, prm-server]
+    volumes:
+      - ./frp/frpc.toml:/etc/frp/frpc.toml:ro
+    environment:
+      FRPS_ADDR: ${FRPS_ADDR:?FRPS_ADDR required — 학습 PC 의 공인 IP 또는 DDNS hostname}
+      FRPS_TOKEN: ${FRPS_TOKEN:?FRPS_TOKEN required — frps 와 일치}
+      NODE_NAME: ${NODE_NAME:?NODE_NAME required — 노드별 고유 라벨 (예: 5070-pc-01)}
+    command: ["-c", "/etc/frp/frpc.toml"]
 
-  # ---------------------------- μ — vLLM OpenAI API (port 8001 on ZeroTier) ----------------------------
-  # 같은 ZeroTier 가상 LAN의 학습 PC가 이 노드의 가상 IP:8001로 호출.
-  # role=mu 또는 role=prm 중 하나만 띄움 — `docker compose up mu-server` (또는 prm-server)
+  # ---------------------------- μ — vLLM OpenAI API (port 8001) ----------------------------
+  # frpc 가 docker bridge 의 service name "mu-server" 로 reach.
   mu-server:
     build: .
     image: pav-rl:latest
     container_name: pav-mu-server
     restart: unless-stopped
-    network_mode: "service:zerotier"
-    depends_on: [zerotier]
     <<: *gpu
     environment:
       HF_HOME: /cache/huggingface
@@ -85,14 +77,12 @@ services:
       --enforce-eager
     shm_size: "4g"
 
-  # ---------------------------- PRM — FastAPI (port 8002 on ZeroTier) ----------------------------
+  # ---------------------------- PRM — FastAPI (port 8002) ----------------------------
   prm-server:
     build: .
     image: pav-rl:latest
     container_name: pav-prm-server
     restart: unless-stopped
-    network_mode: "service:zerotier"
-    depends_on: [zerotier]
     <<: *gpu
     environment:
       HF_HOME: /cache/huggingface
