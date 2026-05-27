@@ -237,8 +237,8 @@ VRAM 점유: μ+PRM **~22 GB / 24 GB** | μ만 **~10 GB / 12 GB** | PRM만 **~2 
 
 **⚠️ Blackwell 호환성:**
 - RTX 5070은 SM 12.0 (Blackwell). 기존 PyTorch 2.5.1은 미지원.
-- compose 파일이 `BLACKWELL=1` 빌드 인자로 자동 처리:
-  - 베이스 이미지: `pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime`
+- compose 파일이 `BASE_IMAGE` + `TORCH_INDEX` 빌드 인자로 자동 처리:
+  - 베이스 이미지: `pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime`
   - uv sync: `--index-url https://download.pytorch.org/whl/cu128`
   - 환경변수: `TORCH_CUDA_ARCH_LIST=12.0`, `CUDA_MODULE_LOADING=LAZY`
 
@@ -246,10 +246,10 @@ VRAM 점유: μ+PRM **~22 GB / 24 GB** | μ만 **~10 GB / 12 GB** | PRM만 **~2 
 
 | 증상 | 해결 |
 |---|---|
-| vLLM 시작 시 `CUDA error: no kernel image` | `BLACKWELL=1` 빌드 인자 누락. `docker compose -f docker-compose.inference-blackwell.yml build` 로 재빌드 |
+| vLLM 시작 시 `CUDA error: no kernel image` | Blackwell 빌드 인자 누락. `docker compose -f docker-compose.inference-blackwell.yml build` 로 재빌드 |
 | μ vLLM OOM (12GB) | `MU_GPU_MEM`을 0.65로 낮춤. `MU_MAX_LEN`을 1024로 축소 |
 | PRM OOM | `prm.yaml`의 `quantization`을 `8bit`로 설정 (기본값) |
-| 빌드 시 torch 버전 충돌 | `BLACKWELL=1`이면 cu128 인덱스에서 설치. `BLACKWELL=0`(기본)은 기존 cu124 |
+| 빌드 시 torch 버전 충돌 | Blackwell은 `TORCH_INDEX=https://download.pytorch.org/whl/cu128`로 설치. 기본은 cu124 |
 
 ---
 

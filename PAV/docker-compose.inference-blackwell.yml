@@ -6,8 +6,8 @@
 #   - PRM만: docker compose -f docker-compose.inference-blackwell.yml up prm-server
 #
 # === Blackwell (RTX 5070, SM 12.0) ===
-#   BLACKWELL=1 빌드 인자로 PyTorch 2.7+ / CUDA 12.8 이미지 사용.
-#   Dockerfile 내부에서 ARG BLACKWELL 분기 처리.
+#   BASE_IMAGE + TORCH_INDEX 빌드 인자로 PyTorch 2.9.1 / CUDA 12.8 이미지 사용.
+#   Dockerfile 내부에서 ARG 분기 처리.
 #
 # === 사용 ===
 #   FRPS_ADDR=<학습PC공인IP> FRPS_TOKEN=<토큰> NODE_NAME=5070-mu-01 \
@@ -34,7 +34,8 @@ x-blackwell-build: &blackwell-build
   build:
     context: .
     args:
-      BLACKWELL: "1"
+      BASE_IMAGE: pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime
+      TORCH_INDEX: https://download.pytorch.org/whl/cu128
 
 services:
   # ---------------------------- FRP Client (학습 PC 로 outbound tunnel) ----------------------------
@@ -52,7 +53,7 @@ services:
 
   # ---------------------------- μ — vLLM OpenAI API (port 8001) ----------------------------
   # 12GB VRAM, 1.5B 모델 전용 → gpu_mem 0.85 여유 (서비스 1개만 실행)
-  # Blackwell: BLACKWELL=1 빌드 → PyTorch 2.7+ / vLLM cu128 설치
+  # Blackwell: BASE_IMAGE=pytorch:2.9.1-cu128 + TORCH_INDEX=cu128
   mu-server:
     <<: [*blackwell-build, *gpu]
     image: pav-rl:blackwell
@@ -80,7 +81,7 @@ services:
 
   # ---------------------------- PRM — FastAPI on GPU (port 8002) ----------------------------
   # 12GB VRAM, PRM 1.5B int8 전용 → GPU 메모리 충분 (서비스 1개만 실행)
-  # Blackwell: BLACKWELL=1 빌드 → PyTorch 2.7+ / CUDA 12.8 설치
+  # Blackwell: BASE_IMAGE=pytorch:2.9.1-cu128 + TORCH_INDEX=cu128
   prm-server:
     <<: [*blackwell-build, *gpu]
     image: pav-rl:blackwell
