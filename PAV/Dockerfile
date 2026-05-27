@@ -38,6 +38,7 @@ COPY uv.lock* ./
 ARG TORCH_INDEX=
 ARG BLACKWELL_EXTRAS=0
 RUN if [ "$BLACKWELL_EXTRAS" = "1" ]; then \
+      uv venv && \
       uv pip install \
         "torch>=2.9" "torchvision>=0.22" "torchaudio>=2.9" \
         "vllm>=0.10" "transformers>=4.45,<4.50" "accelerate>=1.0" \
