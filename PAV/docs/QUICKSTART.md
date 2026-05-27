@@ -184,46 +184,52 @@ curl http://localhost:8002/health         # PRM
 
 ### 1-B. Blackwell GPU (RTX 5070 등) ⭐
 
-PyTorch 2.7+ / CUDA 12.8 필요. `docker-compose.inference-blackwell.yml` 사용.
-Dockerfile의 `BLACKWELL=1` 빌드 인자로 자동 분기 (베이스 이미지 + cu128 패키지).
+PyTorch 2.5.1은 Blackwell(SM 12.0)을 지원하지 않습니다.
+`docker-compose.inference-blackwell.yml`은 **vLLM 공식 이미지**를 사용하여 이 문제를 해결합니다.
 
 **아키텍처:**
 ```
 ┌──────────────┐  HTTP  ┌──────────────┐  HTTP  ┌──────────────┐
 │ 학습 PC 3090  │◄──────►│ 5070 PC #1   │       │ 5070 PC #2   │
 │ PyTorch 2.5.1 │       │ μ vLLM 전용  │       │ PRM 전용     │
-│ 기존 스택 그대로│       │ PyTorch 2.7+ │       │ PyTorch 2.7+ │
-└──────────────┘       └──────────────┘       └──────────────┘
+│ 기존 스택 그대로│       │ vLLM 공식    │       │ vLLM 공식    │
+└──────────────┘       │ 이미지 직접  │       │ 이미지+코드  │
+                       └──────────────┘       └──────────────┘
 ```
 
 > 학습 PC(3090)는 기존 스택 그대로 — HTTP 통신이므로 버전 무관.
 
-#### μ + PRM 동시 실행 (24GB+ VRAM)
+**핵심 차이 (vs Ampere/Ada 설정):**
+| 항목 | Ampere/Ada | Blackwell |
+|------|-----------|-----------|
+| μ vLLM 이미지 | `pav-rl:latest` (빌드) | **`vllm/vllm-openai:latest`** (공식, 빌드 불필요) |
+| PRM 이미지 | `pav-rl:latest` (빌드) | **`pav-rl:blackwell-prm`** (`Dockerfile.blackwell` 빌드) |
+| PyTorch | 2.5.1 (cu124) | **vLLM 내장** (Blackwell 호환) |
+| Docker 이미지 | 프로젝트 Dockerfile | **vLLM 공식 이미지 + 별도 Dockerfile.blackwell** |
+
+**⚠️ Blackwell (RTX 5070) 호환성:**
+- RTX 5070은 Blackwell 아키텍처(SM 12.0)입니다.
+- 공식 PyTorch Docker 이미지는 아직 sm_120 커널을 포함하지 않습니다.
+- `docker-compose.inference-blackwell.yml`은 **vLLM 공식 이미지**를 사용:
+  - μ 서버: `vllm/vllm-openai:latest` 직접 사용 (빌드 불필요)
+  - PRM 서버: `Dockerfile.blackwell`로 빌드 (vLLM 이미지 베이스 + 프로젝트 코드)
+- 학습 PC(3090)는 기존 스택 그대로 — HTTP 통신이므로 버전 무관.
 
 ```bash
 cd PAV
 cp .env.example .env
 
-# 같은 LAN:
-docker compose -f docker-compose.inference-blackwell.yml up -d --build
+# μ 전용 5070 PC (vLLM 공식 이미지, 빌드 불필요):
+FRPS_ADDR=<학습PC 공인IP/DDNS> FRPS_TOKEN=<frps 와 동일 토큰> NODE_NAME=5070-mu-01 \
+  docker compose -f docker-compose.inference-blackwell.yml up -d mu-server
 
-# FRP TCP tunnel:
-FRPS_ADDR=<학습PC 공인IP/DDNS> FRPS_TOKEN=<frps 와 동일 토큰> NODE_NAME=<유일라벨> \
-  docker compose -f docker-compose.inference-blackwell.yml up -d --build
-```
-
-#### μ만 실행
-
-```bash
-FRPS_ADDR=... FRPS_TOKEN=... NODE_NAME=5070-mu-01 \
-  docker compose -f docker-compose.inference-blackwell.yml up -d --build mu-server
-```
-
-#### PRM만 실행
-
-```bash
-FRPS_ADDR=... FRPS_TOKEN=... NODE_NAME=5070-prm-01 \
+# PRM 전용 5070 PC (Dockerfile.blackwell 빌드):
+FRPS_ADDR=<학습PC 공인IP/DDNS> FRPS_TOKEN=<frps 와 동일 토큰> NODE_NAME=5070-prm-01 \
   docker compose -f docker-compose.inference-blackwell.yml up -d --build prm-server
+
+# 같은 LAN (FRP 안 씀):
+docker compose -f docker-compose.inference-blackwell.yml up -d mu-server   # μ 전용 PC
+docker compose -f docker-compose.inference-blackwell.yml up -d --build prm-server  # PRM 전용 PC
 ```
 
 상태 확인:
@@ -233,23 +239,16 @@ curl http://localhost:8001/v1/models     # μ vLLM
 curl http://localhost:8002/health         # PRM
 ```
 
-VRAM 점유: μ+PRM **~22 GB / 24 GB** | μ만 **~10 GB / 12 GB** | PRM만 **~2 GB / 12 GB** ✅
-
-**⚠️ Blackwell 호환성:**
-- RTX 5070은 SM 12.0 (Blackwell). 기존 PyTorch 2.5.1은 미지원.
-- compose 파일이 `BASE_IMAGE` + `TORCH_INDEX` 빌드 인자로 자동 처리:
-  - 베이스 이미지: `pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime`
-  - uv sync: `--index-url https://download.pytorch.org/whl/cu128`
-  - 환경변수: `TORCH_CUDA_ARCH_LIST=12.0`, `CUDA_MODULE_LOADING=LAZY`
+VRAM 점유: μ+PRM **~14 GB / 24 GB** | μ만 **~10 GB / 12 GB** | PRM만 **~2 GB / 12 GB** ✅
 
 **트러블슈팅 (Blackwell 전용):**
 
 | 증상 | 해결 |
 |---|---|
-| vLLM 시작 시 `CUDA error: no kernel image` | Blackwell 빌드 인자 누락. `docker compose -f docker-compose.inference-blackwell.yml build` 로 재빌드 |
+| vLLM 시작 시 `CUDA error: no kernel image` | vLLM 공식 이미지가 아닌 경우. `docker pull vllm/vllm-openai:latest`로 최신 이미지 확인 |
 | μ vLLM OOM (12GB) | `MU_GPU_MEM`을 0.65로 낮춤. `MU_MAX_LEN`을 1024로 축소 |
 | PRM OOM | `prm.yaml`의 `quantization`을 `8bit`로 설정 (기본값) |
-| 빌드 시 torch 버전 충돌 | Blackwell은 `TORCH_INDEX=https://download.pytorch.org/whl/cu128`로 설치. 기본은 cu124 |
+| PRM 빌드 실패 | `Dockerfile.blackwell`에서 `uv pip install` 오류 시 네트워크 확인 |
 
 ---
 

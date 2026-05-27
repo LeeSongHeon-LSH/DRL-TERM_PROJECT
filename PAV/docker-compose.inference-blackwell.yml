@@ -6,8 +6,8 @@
 #   - PRM만: docker compose -f docker-compose.inference-blackwell.yml up prm-server
 #
 # === Blackwell (RTX 5070, SM 12.0) ===
-#   BASE_IMAGE + TORCH_INDEX 빌드 인자로 PyTorch 2.9.1 / CUDA 12.8 이미지 사용.
-#   Dockerfile 내부에서 ARG 분기 처리.
+#   μ 서버: vLLM 공식 이미지 직접 사용 (Blackwell 호환 PyTorch 포함)
+#   PRM 서버: vLLM 이미지를 베이스로 + 프로젝트 코드 추가
 #
 # === 사용 ===
 #   FRPS_ADDR=<학습PC공인IP> FRPS_TOKEN=<토큰> NODE_NAME=5070-mu-01 \
@@ -30,13 +30,6 @@ x-gpu: &gpu
             count: 1
             capabilities: [gpu]
 
-x-blackwell-build: &blackwell-build
-  build:
-    context: .
-    args:
-      BASE_IMAGE: pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime
-      BLACKWELL_EXTRAS: "1"
-
 services:
   # ---------------------------- FRP Client (학습 PC 로 outbound tunnel) ----------------------------
   frpc:
@@ -52,13 +45,12 @@ services:
     command: ["-c", "/etc/frp/frpc.toml"]
 
   # ---------------------------- μ — vLLM OpenAI API (port 8001) ----------------------------
-  # 12GB VRAM, 1.5B 모델 전용 → gpu_mem 0.85 여유 (서비스 1개만 실행)
-  # Blackwell: BASE_IMAGE=pytorch:2.9.1-cu128 + TORCH_INDEX=cu128
+  # vLLM 공식 이미지 직접 사용 (Blackwell 호환 PyTorch 포함, 빌드 불필요)
   mu-server:
-    <<: [*blackwell-build, *gpu]
-    image: pav-rl:blackwell
+    image: vllm/vllm-openai:latest
     container_name: pav-mu-server
     restart: unless-stopped
+    <<: *gpu
     environment:
       HF_HOME: /cache/huggingface
       HF_TOKEN: ${HF_TOKEN:-}
@@ -68,7 +60,6 @@ services:
     volumes:
       - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
     command: >
-      python -m vllm.entrypoints.openai.api_server
       --model ${MU_MODEL_ID:-Qwen/Qwen2.5-Math-1.5B-Instruct}
       --port 8001
       --host 0.0.0.0
@@ -80,13 +71,16 @@ services:
     shm_size: "4g"
 
   # ---------------------------- PRM — FastAPI on GPU (port 8002) ----------------------------
-  # 12GB VRAM, PRM 1.5B int8 전용 → GPU 메모리 충분 (서비스 1개만 실행)
-  # Blackwell: BASE_IMAGE=pytorch:2.9.1-cu128 + TORCH_INDEX=cu128
+  # vLLM 이미지를 베이스로 + 프로젝트 코드(src/prm) 추가
+  # Dockerfile.blackwell에서 빌드 (vllm 이미지 + uv pip install transformers 등)
   prm-server:
-    <<: [*blackwell-build, *gpu]
-    image: pav-rl:blackwell
+    build:
+      context: .
+      dockerfile: Dockerfile.blackwell
+    image: pav-rl:blackwell-prm
     container_name: pav-prm-server
     restart: unless-stopped
+    <<: *gpu
     environment:
       HF_HOME: /cache/huggingface
       HF_TOKEN: ${HF_TOKEN:-}

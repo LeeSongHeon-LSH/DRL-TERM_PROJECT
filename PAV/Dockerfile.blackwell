@@ -1,0 +1,37 @@
+# Blackwell GPU (RTX 5070 등) 전용 — PRM 서버 빌드
+# vLLM 공식 이미지를 베이스로 사용 (이미 Blackwell 호환 PyTorch 포함)
+# 프로젝트 코드(src/prm)만 추가하여 PRM FastAPI 서버 실행
+
+FROM vllm/vllm-openai:latest
+
+# 시스템 deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv 설치
+ENV UV_INSTALL_DIR=/usr/local/bin
+ADD https://astral.sh/uv/0.11.2/install.sh /tmp/install-uv.sh
+RUN sh /tmp/install-uv.sh && rm /tmp/install-uv.sh
+
+WORKDIR /app
+
+# PRM 서버에 필요한 패키지만 추가 설치
+# vLLM 이미지에 이미 torch/transformers/accelerate 등이 포함됨
+RUN uv pip install --system \
+    "transformers>=4.45,<4.50" \
+    "bitsandbytes>=0.43" \
+    "fastapi>=0.110" "uvicorn[standard]>=0.27" \
+    "pyyaml>=6.0" "datasets>=2.20" "numpy>=1.26" \
+    "huggingface-hub>=0.24" "safetensors>=0.4" "httpx>=0.27"
+
+# 프로젝트 소스
+COPY src/ ./src/
+COPY scripts/ ./scripts/
+COPY configs/ ./configs/
+
+ENV PYTHONPATH=/app
+ENV HF_HOME=/cache/huggingface
+ENV HF_HUB_ENABLE_HF_TRANSFER=1
+
+CMD ["python", "-c", "print('Specify a service in docker-compose.yml')"]
