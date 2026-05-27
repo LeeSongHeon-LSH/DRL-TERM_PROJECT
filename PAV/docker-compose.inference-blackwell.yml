@@ -35,7 +35,6 @@ x-blackwell-build: &blackwell-build
     context: .
     args:
       BASE_IMAGE: pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime
-      TORCH_INDEX: https://download.pytorch.org/whl/cu128
       BLACKWELL_EXTRAS: "1"
 
 services:
