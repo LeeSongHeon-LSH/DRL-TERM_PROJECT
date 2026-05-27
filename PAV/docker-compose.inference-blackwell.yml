@@ -81,6 +81,7 @@ services:
     container_name: pav-prm-server
     restart: unless-stopped
     <<: *gpu
+    entrypoint: [""]
     environment:
       HF_HOME: /cache/huggingface
       HF_TOKEN: ${HF_TOKEN:-}
