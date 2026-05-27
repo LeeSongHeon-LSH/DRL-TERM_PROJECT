@@ -1,0 +1,26 @@
+# Skywork-o1-Open-PRM-Qwen-2.5-1.5B — Blackwell GPU (RTX 5070 등) 전용
+#
+# 핵심 변경 (vs prm.yaml):
+#   - quantization: 8bit → none (bitsandbytes가 PyTorch 2.11+와 호환되지 않음)
+#   - dtype: float16 (fp16, ~3GB VRAM)
+#   - device: cuda (GPU 직접 사용)
+
+name: skywork-o1-prm-blackwell
+model_id: Skywork/Skywork-o1-Open-PRM-Qwen-2.5-1.5B
+
+# 양자화 / 추론
+quantization: none          # 8bit → none (bitsandbytes 호환성)
+dtype: float16
+device: cuda
+max_model_len: 4096
+
+# step 경계 — Skywork PRM은 단일 newline (\n)
+step_token: "\n"
+batch_size: 16
+
+# ---- 분산 모드
+# 추론 PC에서는 항상 local (이 서버 자체가 PRM)
+mode: local
+remote:
+  endpoint: http://localhost:8002
+  timeout: 300

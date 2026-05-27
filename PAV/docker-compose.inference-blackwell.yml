@@ -86,7 +86,7 @@ services:
       HF_HOME: /cache/huggingface
       HF_TOKEN: ${HF_TOKEN:-}
       HF_HUB_ENABLE_HF_TRANSFER: "0"
-      PRM_CONFIG: /app/configs/prm.yaml
+      PRM_CONFIG: /app/configs/prm_blackwell.yaml
       TORCH_CUDA_ARCH_LIST: "12.0"
       CUDA_MODULE_LOADING: LAZY
     volumes:
@@ -96,6 +96,6 @@ services:
       - ./scripts:/app/scripts:ro
     command: >
       python3 scripts/serve_prm_http.py
-      --config /app/configs/prm.yaml
+      --config /app/configs/prm_blackwell.yaml
       --host 0.0.0.0
       --port 8002
