@@ -30,11 +30,11 @@ COPY pyproject.toml ./
 COPY uv.lock* ./
 # torch는 호스트의 cu124 인덱스에서 받음. base 이미지의 torch는 덮어쓰일 수 있어 --reinstall로 강제 동기화
 # --extra serve: 추론 PC의 PRM FastAPI 서버(scripts/serve_prm_http.py)를 위해 fastapi/uvicorn 포함
-# Blackwell: cu128 인덱스에서 torch 설치 (SM 12.0 커널 포함)
+# Blackwell: cu128 인덱스를 추가로 지정 (PyPI는 기본 유지, torch만 cu128에서 설치)
 ARG TORCH_INDEX=
 RUN if [ -n "$TORCH_INDEX" ]; then \
       uv sync --extra gpu --extra serve --no-dev --link-mode=copy \
-        --index-url "$TORCH_INDEX"; \
+        --extra-index-url "$TORCH_INDEX"; \
     else \
       uv sync --extra gpu --extra serve --no-dev --link-mode=copy; \
     fi
