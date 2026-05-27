@@ -3,12 +3,17 @@
 #   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
 #
 # 이미지 빌드:
-#   docker compose build
+#   docker compose build                    # 기본 (Ampere/Ada — 3090, 4090 등)
+#   BLACKWELL=1 docker compose build         # Blackwell — RTX 5070 등 (SM 12.0)
 #
 # 가중치는 컨테이너 안에 굽지 않고, hf_cache 볼륨으로 호스트와 공유.
 # 워커가 처음 시작될 때 PRM/정책을 자동으로 다운로드 (lazy load).
 
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+ARG BLACKWELL=0
+
+# Blackwell(SM 12.0)은 PyTorch 2.7+ / CUDA 12.8+ 필요.
+# 기본(Ampere/Ada)은 기존 PyTorch 2.5.1 / CUDA 12.4 유지.
+FROM pytorch/pytorch:${BLACKWELL:+2.7.0-cuda12.8-cudnn9-runtime}${BLACKWELL:-2.5.1-cuda12.4-cudnn9-runtime}
 
 # 시스템 deps (vLLM build 의존성, git, ca-certs)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -27,7 +32,13 @@ COPY pyproject.toml ./
 COPY uv.lock* ./
 # torch는 호스트의 cu124 인덱스에서 받음. base 이미지의 torch는 덮어쓰일 수 있어 --reinstall로 강제 동기화
 # --extra serve: 추론 PC의 PRM FastAPI 서버(scripts/serve_prm_http.py)를 위해 fastapi/uvicorn 포함
-RUN uv sync --extra gpu --extra serve --no-dev --link-mode=copy
+# Blackwell: cu128 인덱스에서 torch 2.7+ 설치 (SM 12.0 커널 포함)
+RUN if [ "$BLACKWELL" = "1" ]; then \
+      uv sync --extra gpu --extra serve --no-dev --link-mode=copy \
+        --index-url https://download.pytorch.org/whl/cu128; \
+    else \
+      uv sync --extra gpu --extra serve --no-dev --link-mode=copy; \
+    fi
 
 # 2) 소스
 COPY src/ ./src/

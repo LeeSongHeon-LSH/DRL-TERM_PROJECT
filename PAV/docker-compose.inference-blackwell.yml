@@ -1,0 +1,105 @@
+# 추론 PC — Blackwell GPU (RTX 5070 등) 전용 설정
+#
+# μ + PRM 동시 / μ만 / PRM만 선택 가능:
+#   - μ + PRM 동시: docker compose -f docker-compose.inference-blackwell.yml up
+#   - μ만: docker compose -f docker-compose.inference-blackwell.yml up mu-server
+#   - PRM만: docker compose -f docker-compose.inference-blackwell.yml up prm-server
+#
+# === Blackwell (RTX 5070, SM 12.0) ===
+#   BLACKWELL=1 빌드 인자로 PyTorch 2.7+ / CUDA 12.8 이미지 사용.
+#   Dockerfile 내부에서 ARG BLACKWELL 분기 처리.
+#
+# === 사용 ===
+#   FRPS_ADDR=<학습PC공인IP> FRPS_TOKEN=<토큰> NODE_NAME=5070-mu-01 \
+#     docker compose -f docker-compose.inference-blackwell.yml up -d --build mu-server
+#
+#   FRPS_ADDR=<학습PC공인IP> FRPS_TOKEN=<토큰> NODE_NAME=5070-prm-01 \
+#     docker compose -f docker-compose.inference-blackwell.yml up -d --build prm-server
+#
+# === VRAM 예측 ===
+#   μ + PRM 동시 (24GB+): μ ~10 GB + PRM ~4 GB = ~14 GB ✅
+#   μ만 (12GB): μ ~10 GB ✅
+#   PRM만 (12GB): PRM ~2 GB ✅
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+
+x-blackwell-build: &blackwell-build
+  build:
+    context: .
+    args:
+      BLACKWELL: "1"
+
+services:
+  # ---------------------------- FRP Client (학습 PC 로 outbound tunnel) ----------------------------
+  frpc:
+    image: fatedier/frpc:v0.61.0
+    container_name: pav-frpc
+    restart: unless-stopped
+    volumes:
+      - ./frp/frpc.toml:/etc/frp/frpc.toml:ro
+    environment:
+      FRPS_ADDR: "${FRPS_ADDR:-}"
+      FRPS_TOKEN: "${FRPS_TOKEN:-}"
+      NODE_NAME: "${NODE_NAME:-}"
+    command: ["-c", "/etc/frp/frpc.toml"]
+
+  # ---------------------------- μ — vLLM OpenAI API (port 8001) ----------------------------
+  # 12GB VRAM, 1.5B 모델 전용 → gpu_mem 0.85 여유 (서비스 1개만 실행)
+  # Blackwell: BLACKWELL=1 빌드 → PyTorch 2.7+ / vLLM cu128 설치
+  mu-server:
+    <<: [*blackwell-build, *gpu]
+    image: pav-rl:blackwell
+    container_name: pav-mu-server
+    restart: unless-stopped
+    environment:
+      HF_HOME: /cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      TORCH_CUDA_ARCH_LIST: "12.0"
+      CUDA_MODULE_LOADING: LAZY
+    volumes:
+      - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
+    command: >
+      python -m vllm.entrypoints.openai.api_server
+      --model ${MU_MODEL_ID:-Qwen/Qwen2.5-Math-1.5B-Instruct}
+      --port 8001
+      --host 0.0.0.0
+      --gpu-memory-utilization ${MU_GPU_MEM:-0.85}
+      --max-model-len ${MU_MAX_LEN:-1536}
+      --max-num-seqs ${MU_MAX_NUM_SEQS:-32}
+      --dtype bfloat16
+      --enable-prefix-caching
+    shm_size: "4g"
+
+  # ---------------------------- PRM — FastAPI on GPU (port 8002) ----------------------------
+  # 12GB VRAM, PRM 1.5B int8 전용 → GPU 메모리 충분 (서비스 1개만 실행)
+  # Blackwell: BLACKWELL=1 빌드 → PyTorch 2.7+ / CUDA 12.8 설치
+  prm-server:
+    <<: [*blackwell-build, *gpu]
+    image: pav-rl:blackwell
+    container_name: pav-prm-server
+    restart: unless-stopped
+    environment:
+      HF_HOME: /cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      PRM_CONFIG: /app/configs/prm.yaml
+      TORCH_CUDA_ARCH_LIST: "12.0"
+      CUDA_MODULE_LOADING: LAZY
+    volumes:
+      - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
+      - ./configs:/app/configs:ro
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+    command: >
+      python scripts/serve_prm_http.py
+      --config /app/configs/prm.yaml
+      --host 0.0.0.0
+      --port 8002

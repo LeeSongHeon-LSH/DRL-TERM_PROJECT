@@ -139,32 +139,117 @@ curl -s localhost:7500 | head              # dashboard HTML 응답 (admin / FRPS
 
 ---
 
-## 1. 추론 PC (3090 Ti / 5070 등) — μ + PRM 서빙
+## 1. 추론 PC — μ + PRM 서빙
+
+### 1-A. Ampere / Ada GPU (3090, 3090 Ti, 4090 등)
+
+PyTorch 2.5.1 + CUDA 12.4 기본 이미지. `docker-compose.inference.yml` 사용.
+
+#### μ + PRM 동시 실행 (24GB+ VRAM)
+
+한 PC에 μ와 PRM을 모두 GPU에 올립니다.
 
 ```bash
 cd PAV
-cp .env.example .env                     # 공통 .env (학습 PC와 동일 템플릿)
-# .env에서 추론 관련: MU_MODEL_ID, MU_GPU_MEM 등 확인 (default OK)
+cp .env.example .env
 
-# 같은 LAN 사용 (FRP 안 씀, 사설 IP 직접):
-docker compose -f docker-compose.inference.yml up -d --build mu-server prm-server
+# 같은 LAN:
+docker compose -f docker-compose.inference.yml up -d --build
 
-# FRP TCP tunnel (학습 PC 공인 IP 활용, NAT/CGNAT 무관, 권장 ⭐):
+# FRP TCP tunnel:
 FRPS_ADDR=<학습PC 공인IP/DDNS> FRPS_TOKEN=<frps 와 동일 토큰> NODE_NAME=<유일라벨> \
   docker compose -f docker-compose.inference.yml up -d --build
-# → frpc 가 학습 PC frps (port 7000) 로 outbound TCP 1개 유지
-# → mu/PRM 이 학습 PC localhost:18001/18002 에 노출
-# → 여러 추론 PC 띄우면 NODE_NAME 만 다르게 (예: 5070-pc-01, 02, ...) — frps 가 자동 LB
+```
+
+VRAM 점유: **~18 GB / 24 GB** (μ 1.5B @ 0.85 → ~20 GB + PRM int8 ~4 GB).
+
+#### μ만 실행
+
+```bash
+docker compose -f docker-compose.inference.yml up -d --build mu-server
+```
+
+#### PRM만 실행
+
+```bash
+docker compose -f docker-compose.inference.yml up -d --build prm-server
 ```
 
 상태 확인:
 ```bash
-docker compose -f docker-compose.inference.yml logs -f      # μ "ready" + PRM "Application startup complete" 대기
-curl http://localhost:8002/health                            # PRM   → {"ok": true, ...}
-curl http://localhost:8001/v1/models                         # μ vLLM → {"data": [...]}
+docker compose -f docker-compose.inference.yml logs -f
+curl http://localhost:8001/v1/models     # μ vLLM
+curl http://localhost:8002/health         # PRM
 ```
 
-VRAM 점유: **~18 GB / 24 GB** (μ 1.5B @ MU_GPU_MEM=0.85 → 20 GB + PRM int8 ~4 GB).
+### 1-B. Blackwell GPU (RTX 5070 등) ⭐
+
+PyTorch 2.7+ / CUDA 12.8 필요. `docker-compose.inference-blackwell.yml` 사용.
+Dockerfile의 `BLACKWELL=1` 빌드 인자로 자동 분기 (베이스 이미지 + cu128 패키지).
+
+**아키텍처:**
+```
+┌──────────────┐  HTTP  ┌──────────────┐  HTTP  ┌──────────────┐
+│ 학습 PC 3090  │◄──────►│ 5070 PC #1   │       │ 5070 PC #2   │
+│ PyTorch 2.5.1 │       │ μ vLLM 전용  │       │ PRM 전용     │
+│ 기존 스택 그대로│       │ PyTorch 2.7+ │       │ PyTorch 2.7+ │
+└──────────────┘       └──────────────┘       └──────────────┘
+```
+
+> 학습 PC(3090)는 기존 스택 그대로 — HTTP 통신이므로 버전 무관.
+
+#### μ + PRM 동시 실행 (24GB+ VRAM)
+
+```bash
+cd PAV
+cp .env.example .env
+
+# 같은 LAN:
+docker compose -f docker-compose.inference-blackwell.yml up -d --build
+
+# FRP TCP tunnel:
+FRPS_ADDR=<학습PC 공인IP/DDNS> FRPS_TOKEN=<frps 와 동일 토큰> NODE_NAME=<유일라벨> \
+  docker compose -f docker-compose.inference-blackwell.yml up -d --build
+```
+
+#### μ만 실행
+
+```bash
+FRPS_ADDR=... FRPS_TOKEN=... NODE_NAME=5070-mu-01 \
+  docker compose -f docker-compose.inference-blackwell.yml up -d --build mu-server
+```
+
+#### PRM만 실행
+
+```bash
+FRPS_ADDR=... FRPS_TOKEN=... NODE_NAME=5070-prm-01 \
+  docker compose -f docker-compose.inference-blackwell.yml up -d --build prm-server
+```
+
+상태 확인:
+```bash
+docker compose -f docker-compose.inference-blackwell.yml logs -f
+curl http://localhost:8001/v1/models     # μ vLLM
+curl http://localhost:8002/health         # PRM
+```
+
+VRAM 점유: μ+PRM **~22 GB / 24 GB** | μ만 **~10 GB / 12 GB** | PRM만 **~2 GB / 12 GB** ✅
+
+**⚠️ Blackwell 호환성:**
+- RTX 5070은 SM 12.0 (Blackwell). 기존 PyTorch 2.5.1은 미지원.
+- compose 파일이 `BLACKWELL=1` 빌드 인자로 자동 처리:
+  - 베이스 이미지: `pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime`
+  - uv sync: `--index-url https://download.pytorch.org/whl/cu128`
+  - 환경변수: `TORCH_CUDA_ARCH_LIST=12.0`, `CUDA_MODULE_LOADING=LAZY`
+
+**트러블슈팅 (Blackwell 전용):**
+
+| 증상 | 해결 |
+|---|---|
+| vLLM 시작 시 `CUDA error: no kernel image` | `BLACKWELL=1` 빌드 인자 누락. `docker compose -f docker-compose.inference-blackwell.yml build` 로 재빌드 |
+| μ vLLM OOM (12GB) | `MU_GPU_MEM`을 0.65로 낮춤. `MU_MAX_LEN`을 1024로 축소 |
+| PRM OOM | `prm.yaml`의 `quantization`을 `8bit`로 설정 (기본값) |
+| 빌드 시 torch 버전 충돌 | `BLACKWELL=1`이면 cu128 인덱스에서 설치. `BLACKWELL=0`(기본)은 기존 cu124 |
 
 ---
 
