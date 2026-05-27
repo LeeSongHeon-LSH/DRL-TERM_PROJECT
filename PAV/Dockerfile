@@ -31,16 +31,19 @@ COPY uv.lock* ./
 # --extra serve: 추론 PC의 PRM FastAPI 서버(scripts/serve_prm_http.py)를 위해 fastapi/uvicorn 포함
 # --extra gpu: 학습 PC 전용 (vllm, trl, peft, bitsandbytes 등)
 #
-# Blackwell 추론 PC는 학습 코드를 안 쓰므로 --extra serve만 설치.
-# torch/vllm 버전 제약을 오버라이드하여 베이스 이미지의 버전과 호환.
+# Blackwell 추론 PC는 학습 코드를 안 쓰므로 uv sync 대신 uv pip install로
+# 필요 패키지만 직접 설치. pyproject.toml의 torch==2.5.1, vllm<0.8 제약을
+# 우회하여 베이스 이미지의 torch 2.9+ / vllm 0.10+ 와 호환.
 # 학습 PC(3090)는 기본 이미지(torch 2.5.1) + --extra gpu 그대로.
 ARG TORCH_INDEX=
 ARG BLACKWELL_EXTRAS=0
 RUN if [ "$BLACKWELL_EXTRAS" = "1" ]; then \
-      uv sync --extra serve --no-dev --link-mode=copy \
-        --override torch>=2.9 \
-        --override torchvision>=0.22 \
-        --override torchaudio>=2.9 \
+      uv pip install \
+        "torch>=2.9" "torchvision>=0.22" "torchaudio>=2.9" \
+        "vllm>=0.10" "transformers>=4.45,<4.50" "accelerate>=1.0" \
+        "bitsandbytes>=0.43" "fastapi>=0.110" "uvicorn[standard]>=0.27" \
+        "pyyaml>=6.0" "datasets>=2.20" "numpy>=1.26" \
+        "huggingface-hub>=0.24" "safetensors>=0.4" "httpx>=0.27" \
         --extra-index-url "$TORCH_INDEX"; \
     else \
       uv sync --extra gpu --extra serve --no-dev --link-mode=copy; \
