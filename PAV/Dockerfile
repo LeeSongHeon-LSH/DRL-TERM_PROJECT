@@ -28,12 +28,19 @@ WORKDIR /app
 # 1) deps 먼저 (캐시 효과)
 COPY pyproject.toml ./
 COPY uv.lock* ./
-# torch는 호스트의 cu124 인덱스에서 받음. base 이미지의 torch는 덮어쓰일 수 있어 --reinstall로 강제 동기화
 # --extra serve: 추론 PC의 PRM FastAPI 서버(scripts/serve_prm_http.py)를 위해 fastapi/uvicorn 포함
-# Blackwell: cu128 인덱스를 추가로 지정 (PyPI는 기본 유지, torch만 cu128에서 설치)
+# --extra gpu: 학습 PC 전용 (vllm, trl, peft, bitsandbytes 등)
+#
+# Blackwell 추론 PC는 학습 코드를 안 쓰므로 --extra serve만 설치.
+# torch/vllm 버전 제약을 오버라이드하여 베이스 이미지의 버전과 호환.
+# 학습 PC(3090)는 기본 이미지(torch 2.5.1) + --extra gpu 그대로.
 ARG TORCH_INDEX=
-RUN if [ -n "$TORCH_INDEX" ]; then \
-      uv sync --extra gpu --extra serve --no-dev --link-mode=copy \
+ARG BLACKWELL_EXTRAS=0
+RUN if [ "$BLACKWELL_EXTRAS" = "1" ]; then \
+      uv sync --extra serve --no-dev --link-mode=copy \
+        --override torch>=2.9 \
+        --override torchvision>=0.22 \
+        --override torchaudio>=2.9 \
         --extra-index-url "$TORCH_INDEX"; \
     else \
       uv sync --extra gpu --extra serve --no-dev --link-mode=copy; \
