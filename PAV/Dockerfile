@@ -39,6 +39,7 @@ ARG BLACKWELL_EXTRAS=0
 RUN if [ "$BLACKWELL_EXTRAS" = "1" ]; then \
       uv venv && \
       uv pip install \
+        setuptools \
         vllm "transformers>=4.45,<4.50" "accelerate>=1.0" \
         "bitsandbytes>=0.43" "fastapi>=0.110" "uvicorn[standard]>=0.27" \
         "pyyaml>=6.0" "datasets>=2.20" "numpy>=1.26" \
