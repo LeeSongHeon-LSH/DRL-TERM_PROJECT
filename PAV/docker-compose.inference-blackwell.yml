@@ -34,7 +34,7 @@ x-blackwell-build: &blackwell-build
   build:
     context: .
     args:
-      BASE_IMAGE: pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime
+      BASE_IMAGE: pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime
       BLACKWELL_EXTRAS: "1"
 
 services:
