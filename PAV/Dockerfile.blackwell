@@ -18,8 +18,9 @@ WORKDIR /app
 
 # PRM 서버에 필요한 패키지만 추가 설치
 # vLLM 이미지에 이미 torch/transformers/accelerate 등이 포함됨
+# transformers 버전은 vLLM 이미지 내장 버전과 호환되도록 제약 완화
 RUN uv pip install --system \
-    "transformers>=4.45,<4.50" \
+    "transformers>=4.45" \
     "bitsandbytes>=0.43" \
     "fastapi>=0.110" "uvicorn[standard]>=0.27" \
     "pyyaml>=6.0" "datasets>=2.20" "numpy>=1.26" \
