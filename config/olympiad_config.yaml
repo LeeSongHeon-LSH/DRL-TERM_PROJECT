@@ -1,0 +1,29 @@
+model:
+  name: "Qwen/Qwen2.5-Math-1.5B-Instruct"
+  tensor_parallel_size: 1
+  max_model_len: 4096
+  gpu_memory_utilization: 0.85
+  dtype: "bfloat16"
+
+dataset:
+  mathnet_ratio: 0.5           # fraction sampled from MATH (hendrycks/competition_math)
+  olympiadbench_ratio: 0.5     # fraction sampled from OlympiadBench
+  total_samples: 500
+  mathnet_levels: [4, 5]       # MATH difficulty levels 1–5; 4,5 ≈ olympiad-level
+  mathnet_types: []            # empty = all types; e.g. ["Number Theory", "Algebra"]
+  olympiadbench_language: "en" # "en" | "zh" | "both"
+  seed: 42
+
+generation:
+  # temperature > 0 required for diverse sampling when pass_k contains values > 1.
+  # For greedy Pass@1 only, set temperature: 0.0 and n: 1.
+  temperature: 0.8
+  top_p: 0.95
+  max_tokens: 2048
+  n: 256                       # samples generated per problem
+  stop: ["<|im_end|>", "</s>"]
+
+eval:
+  pass_k: [1, 256]             # which pass@k values to compute; must all be <= n
+  output_dir: "results/olympiad"
+  dashboard_output: "dashboard/data/results.json"

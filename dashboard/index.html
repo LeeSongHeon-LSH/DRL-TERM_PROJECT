@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Olympiad Eval — Pass@k</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=JetBrains+Mono:wght@300;400;500;600&family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root {
+  --bg:         #090e0b;
+  --bg-card:    #0d1610;
+  --bg-card2:   #111d14;
+  --border:     #1a2e20;
+  --border-hi:  #274535;
+
+  --chalk:      #e2ddd0;
+  --chalk-dim:  #8faa98;
+  --chalk-mute: #3e5a46;
+
+  --gold:       #c49a35;
+  --gold-b:     #e0b84a;
+  --gold-dim:   #7a5e1a;
+
+  --green:      #5aa872;
+  --green-dim:  #1e3d27;
+  --red:        #b55757;
+  --red-dim:    #3d1e1e;
+  --blue:       #5b9bc2;
+  --blue-dim:   #1a3a52;
+  --purple:     #8a7ab5;
+  --purple-dim: #2a2440;
+
+  --font-s: 'Spectral','Georgia',serif;
+  --font-b: 'Lora','Georgia',serif;
+  --font-m: 'JetBrains Mono','Courier New',monospace;
+  --r: 6px;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--chalk);
+  font-family: var(--font-b);
+  font-size: 15px;
+  line-height: 1.65;
+  overflow-x: hidden;
+  min-height: 100vh;
+}
+
+/* grid texture */
+body::before {
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:
+    linear-gradient(rgba(255,255,255,.017) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(255,255,255,.017) 1px,transparent 1px);
+  background-size:32px 32px;
+}
+body::after {
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(ellipse 80% 60% at 15% 5%, rgba(80,160,100,.06) 0%,transparent 60%),
+    radial-gradient(ellipse 60% 50% at 85% 95%,rgba(50,120,80,.04) 0%,transparent 60%);
+}
+
+.shell { position:relative;z-index:1;max-width:1160px;margin:0 auto;padding:0 28px 80px; }
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+header {
+  display:flex;align-items:flex-start;justify-content:space-between;
+  padding:44px 0 32px;
+  border-bottom:1px dashed var(--border-hi);
+}
+.h-left { display:flex;align-items:center;gap:18px; }
+.sigma {
+  font-family:var(--font-s);font-size:60px;line-height:1;
+  color:var(--gold);text-shadow:0 0 40px rgba(196,154,53,.35);user-select:none;
+}
+.h-titles { display:flex;flex-direction:column;gap:4px; }
+.title { font-family:var(--font-s);font-size:26px;font-weight:500;letter-spacing:.02em; }
+.subtitle { font-family:var(--font-m);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--chalk-dim); }
+
+.h-right { display:flex;flex-direction:column;align-items:flex-end;gap:10px; }
+.model-badge {
+  background:var(--bg-card2);border:1px solid var(--border-hi);border-radius:40px;
+  padding:6px 16px;font-family:var(--font-m);font-size:12px;color:var(--gold);letter-spacing:.04em;
+}
+.h-meta {
+  display:flex;align-items:center;gap:18px;
+  font-family:var(--font-m);font-size:11px;color:var(--chalk-dim);letter-spacing:.08em;
+}
+.n-badge {
+  background:var(--purple-dim);border:1px solid var(--purple);border-radius:20px;
+  padding:3px 10px;color:var(--purple);font-size:10px;
+}
+
+/* ── Pass@k hero ─────────────────────────────────────────────────────────── */
+.passk-hero {
+  display:grid;gap:14px;
+  margin-top:32px;
+}
+/* slots filled dynamically based on number of k values */
+
+.passk-card {
+  background:var(--bg-card);border:1px solid var(--border);border-radius:var(--r);
+  padding:26px 28px 22px;
+  opacity:0;transform:translateY(14px);
+  transition:opacity .5s,transform .5s,border-color .2s,background .2s;
+}
+.passk-card.visible { opacity:1;transform:none; }
+.passk-card:hover   { border-color:var(--border-hi);background:var(--bg-card2); }
+
+.passk-card.primary { border-color:var(--gold-dim); }
+.passk-card.primary:hover { border-color:var(--gold); }
+
+.pk-label {
+  font-family:var(--font-m);font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--chalk-mute);margin-bottom:8px;
+}
+.pk-value {
+  font-family:var(--font-m);font-size:42px;font-weight:600;line-height:1;
+  margin-bottom:6px;
+}
+.pk-value.c-gold   { color:var(--gold-b); }
+.pk-value.c-green  { color:var(--green); }
+.pk-value.c-blue   { color:var(--blue); }
+.pk-value.c-purple { color:var(--purple); }
+
+.pk-sub {
+  font-family:var(--font-m);font-size:11px;color:var(--chalk-dim);
+}
+
+/* formula tooltip */
+.pk-formula {
+  margin-top:10px;padding:8px 10px;
+  background:var(--bg-card2);border:1px dashed var(--border-hi);border-radius:4px;
+  font-family:var(--font-m);font-size:10px;color:var(--chalk-mute);letter-spacing:.04em;
+  line-height:1.5;
+}
+
+/* ── Viz row ─────────────────────────────────────────────────────────────── */
+.viz-row {
+  display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px;
+}
+.card {
+  background:var(--bg-card);border:1px solid var(--border);border-radius:var(--r);
+  padding:26px 26px 22px;
+}
+.card-title {
+  font-family:var(--font-m);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--chalk-mute);margin-bottom:20px;
+}
+
+/* donut */
+.donut-wrap { display:flex;align-items:center;gap:28px; }
+#donut-canvas { flex-shrink:0; }
+.donut-legend { display:flex;flex-direction:column;gap:14px;flex:1; }
+.dl-item { display:flex;align-items:center;gap:10px; }
+.dl-swatch { width:10px;height:10px;border-radius:2px;flex-shrink:0; }
+.dl-label { font-family:var(--font-m);font-size:12px;color:var(--chalk-dim);flex:1; }
+.dl-val   { font-family:var(--font-m);font-size:13px;font-weight:600;color:var(--chalk); }
+
+/* source bars */
+.src-bars { display:flex;flex-direction:column;gap:18px; }
+.src-group { display:flex;flex-direction:column;gap:6px; }
+.src-head  { display:flex;align-items:flex-end;justify-content:space-between;gap:8px; }
+.src-name  { font-family:var(--font-m);font-size:11px;color:var(--chalk-dim);letter-spacing:.04em; }
+.src-vals  { display:flex;gap:12px; }
+.src-kv    { font-family:var(--font-m);font-size:11px; }
+.src-kv .k { color:var(--chalk-mute); }
+.src-kv .v { font-weight:600; }
+
+.bar-track { height:7px;background:var(--bg-card2);border-radius:4px;overflow:hidden;border:1px solid var(--border); }
+.bar-fill  { height:100%;border-radius:4px;width:0;transition:width 1.3s cubic-bezier(.22,.61,.36,1); }
+.bar-fill.f-gold   { background:linear-gradient(90deg,var(--gold-dim),var(--gold)); }
+.bar-fill.f-blue   { background:linear-gradient(90deg,var(--blue-dim),var(--blue)); }
+.bar-fill.f-green  { background:linear-gradient(90deg,var(--green-dim),var(--green)); }
+.bar-fill.f-purple { background:linear-gradient(90deg,var(--purple-dim),var(--purple)); }
+
+/* ── Section divider ─────────────────────────────────────────────────────── */
+.section-title {
+  font-family:var(--font-m);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--chalk-mute);display:flex;align-items:center;gap:14px;margin:36px 0 16px;
+}
+.section-title::after { content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--border-hi),transparent); }
+
+/* ── Filters ─────────────────────────────────────────────────────────────── */
+.filter-row { display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px; }
+
+.fbtn {
+  font-family:var(--font-m);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+  padding:6px 14px;border:1px solid var(--border);border-radius:20px;
+  background:transparent;color:var(--chalk-dim);cursor:pointer;transition:all .2s;
+}
+.fbtn:hover { border-color:var(--border-hi);color:var(--chalk); }
+.fbtn.active { background:var(--bg-card2);border-color:var(--gold);color:var(--gold); }
+
+.fsearch {
+  margin-left:auto;background:var(--bg-card);border:1px solid var(--border);border-radius:20px;
+  padding:6px 14px;color:var(--chalk);font-family:var(--font-m);font-size:11px;
+  outline:none;width:200px;transition:border-color .2s;
+}
+.fsearch::placeholder { color:var(--chalk-mute); }
+.fsearch:focus { border-color:var(--border-hi); }
+
+/* ── Problem list ─────────────────────────────────────────────────────────── */
+.plist { display:flex;flex-direction:column;gap:9px; }
+
+.pcard {
+  background:var(--bg-card);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;
+  opacity:0;transform:translateY(6px);
+  transition:opacity .3s,transform .3s,border-color .2s;
+}
+.pcard.vis  { opacity:1;transform:none; }
+.pcard:hover{ border-color:var(--border-hi); }
+.pcard.any-correct { border-left:3px solid var(--green); }
+.pcard.none-correct{ border-left:3px solid var(--red); }
+
+.phdr {
+  display:flex;align-items:center;gap:10px;padding:12px 16px;
+  cursor:pointer;user-select:none;
+}
+.phdr:hover { background:rgba(255,255,255,.02); }
+
+/* verdict chip shows pass@1 */
+.vchip {
+  font-family:var(--font-m);font-size:9px;letter-spacing:.12em;text-transform:uppercase;
+  padding:3px 9px;border-radius:20px;flex-shrink:0;
+}
+.vchip.hi   { background:var(--green-dim);color:var(--green);border:1px solid var(--green); }
+.vchip.mid  { background:#1d3020;color:#8fcc9a;border:1px solid #3a6e47; }
+.vchip.lo   { background:var(--red-dim);color:var(--red);border:1px solid var(--red); }
+
+/* c/n ratio */
+.cn-ratio {
+  font-family:var(--font-m);font-size:10px;color:var(--chalk-mute);flex-shrink:0;
+}
+
+/* source chip */
+.schip {
+  font-family:var(--font-m);font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+  padding:3px 9px;border-radius:20px;flex-shrink:0;
+}
+.schip.mathnet       { background:rgba(196,154,53,.12);color:var(--gold);border:1px solid var(--gold-dim); }
+.schip.olympiadbench { background:rgba(91,155,194,.12);color:var(--blue);border:1px solid var(--blue-dim); }
+
+.meta-chip { font-family:var(--font-m);font-size:9px;color:var(--chalk-mute);flex-shrink:0; }
+
+.preview {
+  font-family:var(--font-b);font-size:13px;color:var(--chalk-dim);flex:1;min-width:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+
+.expand-icon { font-family:var(--font-m);font-size:12px;color:var(--chalk-mute);transition:transform .25s;flex-shrink:0;margin-left:auto; }
+.pcard.open .expand-icon { transform:rotate(180deg); }
+
+.pbody {
+  display:none;padding:0 16px 16px;border-top:1px solid var(--border);
+}
+.pcard.open .pbody { display:block; }
+
+.ptext {
+  font-family:var(--font-b);font-size:15px;color:var(--chalk);
+  padding:14px 0 16px;line-height:1.85;
+}
+
+/* pass@k per-problem row */
+.pk-row {
+  display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;
+}
+.pk-pill {
+  font-family:var(--font-m);font-size:11px;
+  padding:4px 12px;border-radius:20px;border:1px solid var(--border-hi);
+  background:var(--bg-card2);
+}
+.pk-pill .kk { color:var(--chalk-mute); }
+.pk-pill .vv { font-weight:600; }
+.pk-pill.hi  .vv { color:var(--green); }
+.pk-pill.mid .vv { color:var(--gold); }
+.pk-pill.lo  .vv { color:var(--red); }
+
+.cn-bar-wrap { display:flex;align-items:center;gap:10px;margin-bottom:14px; }
+.cn-label { font-family:var(--font-m);font-size:10px;color:var(--chalk-mute);flex-shrink:0; }
+.cn-track { flex:1;height:5px;background:var(--bg-card2);border-radius:3px;overflow:hidden; }
+.cn-fill  { height:100%;border-radius:3px;background:var(--green);transition:width .8s cubic-bezier(.22,.61,.36,1); }
+.cn-count { font-family:var(--font-m);font-size:10px;color:var(--chalk-dim);flex-shrink:0; }
+
+.arow { display:grid;grid-template-columns:1fr 1fr;gap:10px; }
+.abox { background:var(--bg-card2);border:1px solid var(--border);border-radius:4px;padding:10px 12px; }
+.abox-label { font-family:var(--font-m);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--chalk-mute);margin-bottom:5px; }
+.abox-val   { font-family:var(--font-m);font-size:13px;color:var(--chalk); }
+.abox.pass  { border-color:var(--green); }
+.abox.fail  { border-color:var(--red); }
+
+/* ── Pager ───────────────────────────────────────────────────────────────── */
+.pager { display:flex;align-items:center;gap:10px;justify-content:center;margin-top:18px; }
+.pgbtn {
+  font-family:var(--font-m);font-size:11px;padding:7px 16px;
+  border:1px solid var(--border);border-radius:20px;background:transparent;color:var(--chalk-dim);cursor:pointer;transition:all .2s;
+}
+.pgbtn:hover { border-color:var(--border-hi);color:var(--chalk); }
+.pgbtn:disabled { opacity:.3;cursor:default; }
+.pginfo { font-family:var(--font-m);font-size:11px;color:var(--chalk-mute); }
+
+/* ── Empty state ─────────────────────────────────────────────────────────── */
+.empty { text-align:center;padding:56px 20px;font-family:var(--font-m);font-size:12px;color:var(--chalk-mute);letter-spacing:.08em;text-transform:uppercase; }
+
+/* ── Loading ─────────────────────────────────────────────────────────────── */
+#loading {
+  position:fixed;inset:0;background:var(--bg);z-index:100;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+  transition:opacity .5s;
+}
+#loading.out { opacity:0;pointer-events:none; }
+.load-sigma { font-family:var(--font-s);font-size:80px;color:var(--gold);animation:blink 1.8s ease-in-out infinite; }
+@keyframes blink { 0%,100%{opacity:.25;transform:scale(.92)} 50%{opacity:1;transform:scale(1)} }
+.load-text  { font-family:var(--font-m);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--chalk-dim); }
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+footer {
+  border-top:1px dashed var(--border);padding:26px 0 0;margin-top:52px;
+  font-family:var(--font-m);font-size:10px;letter-spacing:.1em;color:var(--chalk-mute);text-align:center;text-transform:uppercase;
+}
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+@media(max-width:860px){
+  .viz-row{grid-template-columns:1fr}
+}
+@media(max-width:560px){
+  header{flex-direction:column;gap:18px}
+  .h-right{align-items:flex-start}
+}
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="load-sigma">∑</div>
+  <div class="load-text">Loading evaluation results…</div>
+</div>
+
+<div class="shell">
+
+  <!-- Header -->
+  <header>
+    <div class="h-left">
+      <div class="sigma">∑</div>
+      <div class="h-titles">
+        <div class="title">Olympiad Math Eval</div>
+        <div class="subtitle">MathNet &nbsp;·&nbsp; OlympiadBench &nbsp;·&nbsp; vLLM Pass@k</div>
+      </div>
+    </div>
+    <div class="h-right">
+      <div class="model-badge" id="model-badge">—</div>
+      <div class="h-meta">
+        <span class="n-badge" id="n-badge">n=—</span>
+        <span id="hdr-problems">— problems</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Pass@k hero cards -->
+  <div class="passk-hero" id="passk-hero"></div>
+
+  <!-- Viz row -->
+  <div class="viz-row" id="viz-row" style="margin-top:14px;">
+    <div class="card">
+      <div class="card-title">Pass@k Distribution</div>
+      <div class="donut-wrap">
+        <canvas id="donut-canvas" width="150" height="150"></canvas>
+        <div class="donut-legend" id="donut-legend"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Source Comparison</div>
+      <div class="src-bars" id="src-bars"></div>
+    </div>
+  </div>
+
+  <!-- Problem explorer -->
+  <div class="section-title">Problem Explorer</div>
+
+  <div class="filter-row">
+    <button class="fbtn active" data-f="all">All</button>
+    <button class="fbtn" data-f="any-correct">Any correct ✓</button>
+    <button class="fbtn" data-f="none-correct">None correct ✗</button>
+    <button class="fbtn" data-f="mathnet">MathNet</button>
+    <button class="fbtn" data-f="olympiadbench">OlympiadBench</button>
+    <input class="fsearch" type="text" placeholder="Search problems…" id="search">
+  </div>
+
+  <div class="plist" id="plist"></div>
+
+  <div class="pager" id="pager" style="display:none;">
+    <button class="pgbtn" id="pg-prev">← Prev</button>
+    <span class="pginfo" id="pg-info"></span>
+    <button class="pgbtn" id="pg-next">Next →</button>
+  </div>
+
+  <footer>
+    Qwen2.5-Math-1.5B-Instruct &nbsp;·&nbsp; vLLM Offline &nbsp;·&nbsp;
+    MathNet (hendrycks/competition_math) + OlympiadBench (GAIR/OlympiadBench)
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+// ── KaTeX ────────────────────────────────────────────────────────────────
+function renderMath(el) {
+  if (!window.renderMathInElement) return;
+  renderMathInElement(el, {
+    delimiters: [
+      {left:"$$", right:"$$", display:true},
+      {left:"$",  right:"$",  display:false},
+      {left:"\\[",right:"\\]",display:true},
+      {left:"\\(",right:"\\)",display:false},
+    ],
+    throwOnError: false,
+  });
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+const pct = v => (v * 100).toFixed(1) + "%";
+function esc(s) {
+  return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+function staggerIn(els, start = 0, step = 70) {
+  els.forEach((el, i) => setTimeout(() => el.classList.add("visible"), start + i * step));
+}
+function animBar(el, frac, delay = 0) {
+  setTimeout(() => { el.style.width = (frac * 100).toFixed(2) + "%"; }, delay);
+}
+
+// ── Pass@k color helper ──────────────────────────────────────────────────
+function pkClass(v) {
+  if (v >= 0.7)  return "hi";
+  if (v >= 0.35) return "mid";
+  return "lo";
+}
+const PK_COLORS = ["c-gold","c-green","c-blue","c-purple"];
+const BAR_COLORS_A = ["f-gold","f-green","f-blue","f-purple"];
+const BAR_COLORS_B = ["f-blue","f-purple","f-gold","f-green"];
+
+// ── Donut chart ──────────────────────────────────────────────────────────
+function drawDonut(canvas, slices, dur = 1100) {
+  // slices: [{value, color, label}]
+  const ctx = canvas.getContext("2d");
+  const cx = canvas.width / 2, cy = canvas.height / 2;
+  const R = 58, r = 36;
+
+  const total = slices.reduce((s, x) => s + x.value, 0) || 1;
+  const bgCard = "#0d1610";
+  const bgCard2 = "#111d14";
+  const chalkMute = "#3e5a46";
+  const chalk = "#e2ddd0";
+  const mono = "JetBrains Mono, monospace";
+
+  let t0 = performance.now();
+
+  function frame(now) {
+    const t = Math.min((now - t0) / dur, 1);
+    const ease = t < .5 ? 2*t*t : -1 + (4-2*t)*t;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Background ring
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI*2);
+    ctx.arc(cx, cy, r, Math.PI*2, 0, true);
+    ctx.fillStyle = bgCard2;
+    ctx.fill();
+
+    // Draw slices
+    let angle = -Math.PI / 2;
+    for (const s of slices) {
+      const sweep = (s.value / total) * Math.PI * 2 * ease;
+      ctx.beginPath();
+      ctx.arc(cx, cy, R, angle, angle + sweep);
+      ctx.arc(cx, cy, r, angle + sweep, angle, true);
+      ctx.fillStyle = s.color;
+      ctx.fill();
+      angle += sweep;
+    }
+
+    // Center fill
+    ctx.beginPath();
+    ctx.arc(cx, cy, r - 2, 0, Math.PI*2);
+    ctx.fillStyle = bgCard;
+    ctx.fill();
+
+    // Center text: show primary value animating
+    const primary = slices[0] ?? { value: 0 };
+    ctx.fillStyle = chalk;
+    ctx.font = `600 17px ${mono}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(pct(primary.value * ease), cx, cy - 4);
+    ctx.font = `300 9px ${mono}`;
+    ctx.fillStyle = chalkMute;
+    ctx.fillText(primary.label.toUpperCase(), cx, cy + 12);
+
+    if (t < 1) requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+// ── Data loading ─────────────────────────────────────────────────────────
+async function loadData() {
+  try {
+    const r = await fetch("data/results.json");
+    if (!r.ok) throw new Error();
+    return await r.json();
+  } catch { return null; }
+}
+
+// ── State ─────────────────────────────────────────────────────────────────
+const PAGE = 15;
+let allProbs = [], filtered = [], page = 0;
+let currentFilter = "all", searchQ = "";
+
+function applyFilter() {
+  filtered = allProbs.filter(p => {
+    if (currentFilter === "any-correct"  && !p.correct)                    return false;
+    if (currentFilter === "none-correct" &&  p.correct)                    return false;
+    if (currentFilter === "mathnet"      && p.source !== "mathnet")        return false;
+    if (currentFilter === "olympiadbench"&& p.source !== "olympiadbench")  return false;
+    if (searchQ && !p.problem.toLowerCase().includes(searchQ.toLowerCase())) return false;
+    return true;
+  });
+  page = 0;
+  renderPage();
+}
+
+function renderPage() {
+  const list  = document.getElementById("plist");
+  const pager = document.getElementById("pager");
+  const info  = document.getElementById("pg-info");
+
+  if (!filtered.length) {
+    list.innerHTML = '<div class="empty">No problems match current filter</div>';
+    pager.style.display = "none";
+    return;
+  }
+
+  const totalPages = Math.ceil(filtered.length / PAGE);
+  const start = page * PAGE;
+  const slice = filtered.slice(start, start + PAGE);
+
+  list.innerHTML = "";
+
+  slice.forEach((p, idx) => {
+    const card = document.createElement("div");
+    const anyCorrect = p.correct; // c_samples > 0
+    card.className = `pcard ${anyCorrect ? "any-correct" : "none-correct"}`;
+    card.style.transitionDelay = `${idx * 28}ms`;
+
+    const src       = p.source === "mathnet" ? "mathnet" : "olympiadbench";
+    const srcLabel  = p.source === "mathnet" ? "MathNet" : "OlympiadBench";
+    const meta      = [p.level, p.subject].filter(Boolean).join(" · ");
+    const preview   = p.problem.replace(/\$[^$]*\$/g, "…").replace(/\\[^s\n]*/g, "").slice(0, 72);
+
+    // pass@1 from per-problem data
+    const pk        = p.pass_at_k ?? {};
+    const p1        = pk["pass@1"] ?? null;
+    const vClass    = p1 == null ? "mid" : p1 >= 0.5 ? "hi" : p1 > 0 ? "mid" : "lo";
+    const vLabel    = p1 == null ? "—" : `P@1 ${pct(p1)}`;
+
+    const n = p.n_samples ?? "?";
+    const c = p.c_samples ?? "?";
+
+    // pass@k pills
+    const pkPills = Object.entries(pk).map(([k, v]) => {
+      const cls = pkClass(v);
+      return `<span class="pk-pill ${cls}"><span class="kk">${k} </span><span class="vv">${pct(v)}</span></span>`;
+    }).join("");
+
+    // cn bar
+    const cnFrac = (typeof c === "number" && typeof n === "number" && n > 0) ? c/n : 0;
+
+    card.innerHTML = `
+      <div class="phdr">
+        <span class="vchip ${vClass}">${vLabel}</span>
+        <span class="cn-ratio">${c}/${n}</span>
+        <span class="schip ${src}">${srcLabel}</span>
+        ${meta ? `<span class="meta-chip">${esc(meta)}</span>` : ""}
+        <div class="preview">${esc(preview)}…</div>
+        <span class="expand-icon">▾</span>
+      </div>
+      <div class="pbody">
+        <div class="ptext">${esc(p.problem)}</div>
+        <div class="cn-bar-wrap">
+          <span class="cn-label">Correct samples</span>
+          <div class="cn-track"><div class="cn-fill" style="width:0" data-frac="${cnFrac}"></div></div>
+          <span class="cn-count">${c} / ${n}</span>
+        </div>
+        <div class="pk-row">${pkPills}</div>
+        <div class="arow">
+          <div class="abox ${anyCorrect ? 'pass' : 'fail'}">
+            <div class="abox-label">Best predicted answer</div>
+            <div class="abox-val">${p.predicted_answer != null ? esc(p.predicted_answer) : '<em style="color:var(--chalk-mute)">no \\boxed{} found</em>'}</div>
+          </div>
+          <div class="abox">
+            <div class="abox-label">Ground truth</div>
+            <div class="abox-val">${esc(p.answer)}</div>
+          </div>
+        </div>
+      </div>`;
+
+    card.querySelector(".phdr").addEventListener("click", () => {
+      const wasOpen = card.classList.contains("open");
+      card.classList.toggle("open");
+      if (!wasOpen) {
+        // Animate cn bar
+        const fill = card.querySelector(".cn-fill");
+        if (fill) setTimeout(() => { fill.style.width = (parseFloat(fill.dataset.frac) * 100) + "%"; }, 50);
+        renderMath(card.querySelector(".pbody"));
+      }
+    });
+
+    list.appendChild(card);
+    requestAnimationFrame(() => requestAnimationFrame(() => card.classList.add("vis")));
+  });
+
+  info.textContent = `${start+1}–${Math.min(start+PAGE, filtered.length)} of ${filtered.length}`;
+  document.getElementById("pg-prev").disabled = page === 0;
+  document.getElementById("pg-next").disabled = page >= totalPages - 1;
+  pager.style.display = filtered.length > PAGE ? "flex" : "none";
+}
+
+// ── Bootstrap ─────────────────────────────────────────────────────────────
+(async () => {
+  const data = await loadData();
+  const loading = document.getElementById("loading");
+
+  if (!data) {
+    loading.querySelector(".load-text").textContent =
+      "Could not load data/results.json — run the evaluation first.";
+    return;
+  }
+
+  loading.classList.add("out");
+  setTimeout(() => loading.remove(), 600);
+
+  const { stats, samples } = data;
+  allProbs = samples ?? [];
+  filtered = [...allProbs];
+
+  const n = stats.n_samples_per_problem ?? 1;
+  const pk = stats.pass_at_k ?? {};
+  const pkEntries = Object.entries(pk); // [["pass@1", 0.36], ["pass@256", 0.74]]
+
+  // ── Header ──────────────────────────────────────────────────────────────
+  document.getElementById("model-badge").textContent = (stats.model ?? "").split("/").pop() || stats.model;
+  document.getElementById("n-badge").textContent = `n = ${n} samples`;
+  document.getElementById("hdr-problems").textContent = `${stats.total_problems} problems`;
+
+  // ── Pass@k hero cards ────────────────────────────────────────────────────
+  const hero = document.getElementById("passk-hero");
+  const numCards = pkEntries.length + 1; // +1 for speed
+  hero.style.gridTemplateColumns = `repeat(${Math.min(numCards, 4)}, 1fr)`;
+
+  const cardDefs = pkEntries.map(([key, val], i) => ({
+    label: key,
+    value: pct(val),
+    colorClass: PK_COLORS[i] ?? "c-gold",
+    sub: i === 0
+      ? `avg correct samples per problem`
+      : `at least 1 correct in ${key.replace("pass@", "")} tries`,
+    formula: i === 0
+      ? `estimator:  c / n`
+      : `estimator:  1 − C(n−c, k) / C(n, k)`,
+    primary: i === 0,
+  }));
+
+  cardDefs.push({
+    label: "Speed",
+    value: (stats.seconds_per_problem ?? 0).toFixed(2) + "s",
+    colorClass: "c-blue",
+    sub: `per problem · ${stats.elapsed_seconds?.toFixed(0) ?? "—"}s total`,
+    formula: `${n} samples × ${stats.total_problems} problems`,
+    primary: false,
+  });
+
+  cardDefs.forEach((def, i) => {
+    const div = document.createElement("div");
+    div.className = `passk-card${def.primary ? " primary" : ""}`;
+    div.innerHTML = `
+      <div class="pk-label">${esc(def.label)}</div>
+      <div class="pk-value ${def.colorClass}" id="pkv-${i}">—</div>
+      <div class="pk-sub">${esc(def.sub)}</div>
+      <div class="pk-formula">${esc(def.formula)}</div>`;
+    hero.appendChild(div);
+  });
+
+  staggerIn(hero.querySelectorAll(".passk-card"), 80, 80);
+
+  // Animate number roll-in after cards appear
+  cardDefs.forEach((def, i) => {
+    setTimeout(() => {
+      const el = document.getElementById(`pkv-${i}`);
+      if (el) el.textContent = def.value;
+    }, 200 + i * 80);
+  });
+
+  // ── Source bars ──────────────────────────────────────────────────────────
+  const srcBars = document.getElementById("src-bars");
+  const srcData = stats.by_source ?? {};
+
+  Object.entries(srcData).forEach(([src, d], si) => {
+    const srcPk = d.pass_at_k ?? {};
+    const srcPkEntries = Object.entries(srcPk);
+
+    const kvHtml = srcPkEntries.map(([k, v]) =>
+      `<span class="src-kv"><span class="k">${k} </span><span class="v">${pct(v)}</span></span>`
+    ).join("");
+
+    const primaryPk = srcPkEntries[0];
+    const barFrac = primaryPk ? primaryPk[1] : 0;
+    const barColor = si === 0 ? "f-gold" : "f-blue";
+
+    const group = document.createElement("div");
+    group.className = "src-group";
+    group.innerHTML = `
+      <div class="src-head">
+        <span class="src-name">${src === "mathnet" ? "MathNet" : "OlympiadBench"} <span style="color:var(--chalk-mute)">(n=${d.total})</span></span>
+        <div class="src-vals">${kvHtml}</div>
+      </div>
+      <div class="bar-track"><div class="bar-fill ${barColor}" id="bar-${si}"></div></div>`;
+    srcBars.appendChild(group);
+    setTimeout(() => animBar(document.getElementById(`bar-${si}`), barFrac), 500 + si * 150);
+  });
+
+  // ── Donut ────────────────────────────────────────────────────────────────
+  const CSS_COLORS = [
+    "#c49a35","#5aa872","#5b9bc2","#8a7ab5",
+    "#b55757","#5b8a7b",
+  ];
+
+  const donutSlices = pkEntries.map(([k, v], i) => ({
+    label: k,
+    value: v,
+    color: CSS_COLORS[i] ?? "#888",
+  }));
+
+  if (donutSlices.length) {
+    setTimeout(() => drawDonut(document.getElementById("donut-canvas"), donutSlices), 350);
+  }
+
+  // Legend
+  const legend = document.getElementById("donut-legend");
+  donutSlices.forEach(s => {
+    const item = document.createElement("div");
+    item.className = "dl-item";
+    item.innerHTML = `
+      <div class="dl-swatch" style="background:${s.color}"></div>
+      <span class="dl-label">${esc(s.label)}</span>
+      <span class="dl-val">${pct(s.value)}</span>`;
+    legend.appendChild(item);
+  });
+
+  // ── Problem list ─────────────────────────────────────────────────────────
+  renderPage();
+
+  // ── Filters ──────────────────────────────────────────────────────────────
+  document.querySelectorAll(".fbtn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".fbtn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      currentFilter = btn.dataset.f;
+      applyFilter();
+    });
+  });
+
+  document.getElementById("search").addEventListener("input", e => {
+    searchQ = e.target.value.trim();
+    applyFilter();
+  });
+
+  document.getElementById("pg-prev").addEventListener("click", () => {
+    page--; renderPage();
+    document.getElementById("plist").scrollIntoView({ behavior:"smooth" });
+  });
+  document.getElementById("pg-next").addEventListener("click", () => {
+    page++; renderPage();
+    document.getElementById("plist").scrollIntoView({ behavior:"smooth" });
+  });
+
+  // KaTeX on static content
+  if (window.renderMathInElement) renderMath(document.body);
+  else document.addEventListener("DOMContentLoaded", () => renderMath(document.body));
+})();
+</script>
+</body>
+</html>
