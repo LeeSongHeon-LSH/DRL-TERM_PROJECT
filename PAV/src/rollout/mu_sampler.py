@@ -223,6 +223,10 @@ def build_mu_from_policy_yaml(path: str | Path):
         env_endpoint = os.environ.get("MU_ENDPOINT")
         if env_endpoint:
             remote["endpoint"] = env_endpoint
+        env_replicas = os.environ.get("MU_REPLICAS")
+        replicas = int(env_replicas) if env_replicas else int(remote.get("num_replicas", 1))
+        env_frps = os.environ.get("FRPS_DASHBOARD_URL")
+        frps_url = env_frps or remote.get("frps_dashboard_url", "http://frps:7500")
         return RemoteMuSampler(
             RemoteMuConfig(
                 endpoint=remote.get("endpoint", "http://localhost:8001"),
@@ -232,6 +236,8 @@ def build_mu_from_policy_yaml(path: str | Path):
                 top_p=mu_cfg.get("top_p", 0.95),
                 max_new_tokens=mu_cfg.get("max_new_tokens", 256),
                 step_stop=tuple(mu_cfg.get("step_stop", ["\n\n"])),
+                num_replicas=replicas,
+                frps_dashboard_url=frps_url,
             )
         )
 

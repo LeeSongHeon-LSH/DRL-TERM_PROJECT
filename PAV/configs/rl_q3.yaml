@@ -26,14 +26,13 @@ grpo:
   learning_rate: 5.0e-7     # 1.5B Full FT 기준 (LoRA였다면 5e-6 — 10× 큼)
   total_steps: 5000            # 본격 학습. step time 50s × 5000 = ~70시간
   warmup_steps: 50             # 5000 step의 1% (smoke는 5)
-  gradient_accumulation: 1
+  gradient_accumulation: 8     # batch_size=1 대비 높게 — VRAM 절약
   # optimizer 선택.
-  # paged_adamw_8bit: step 시 12GB scratch dequantize → 24GB OOM.
-  # came: state 6GB + scratch 누적 → 24GB 한계 fragmentation stall.
-  # adafactor: factored variance, state ~1.5GB, 검증됨. LR 민감.
+  # adamw_bnb_8bit: bitsandbytes 8-bit AdamW — 메모리 절반 (VRAM 한계 시 기본)
+  # paged_adamw_8bit: 8-bit + CPU offloading — OOM 방지
   # galore_adamw_8bit_layerwise: gradient low-rank projection + 8bit + layer 단위 → peak 매우 작음. 1.5B Full FT 24GB 최적.
   # LoRA / 4bit QLoRA에서는 "adamw_torch" (default) 또는 "paged_adamw_8bit" 둘 다 OK.
-  optim: galore_adamw_8bit_layerwise
+  optim: adamw_bnb_8bit
 
 # 데이터
 # 학습 = GSM8K (단일), 검증/최종평가 = MathNet (Olympiad-level, English text-only)

@@ -34,9 +34,9 @@ class GRPOSettings:
     learning_rate: float = 5e-6
     total_steps: int = 5000
     warmup_steps: int = 100
-    gradient_accumulation: int = 4
+    gradient_accumulation: int = 8   # batch_size=1 대비 높게 — VRAM 절약
     max_completion_length: int = 512
-    optim: str = "adamw_torch"   # "adamw_torch" | "paged_adamw_8bit" | "adamw_bnb_8bit" 등
+    optim: str = "adamw_bnb_8bit"    # bitsandbytes 8-bit AdamW — 메모리 절반
 
 
 def load_rl_config(path: str | Path) -> dict[str, Any]:
@@ -89,12 +89,18 @@ def build_grpo_trainer(
     _CUSTOM_OPTIMS = {"came"}
     hf_optim = "adamw_torch" if settings.optim in _CUSTOM_OPTIMS else settings.optim
 
+    # Gradient Checkpointing — 활성화 시 VRAM 획기적 절약 (~20-30% 느려짐)
+    if hasattr(policy_model, "gradient_checkpointing_enable"):
+        policy_model.gradient_checkpointing_enable()
+        log.info("Gradient checkpointing enabled")
+
     grpo_cfg_kwargs = dict(
         output_dir=output_dir,
         learning_rate=settings.learning_rate,
         num_generations=settings.group_size,
         max_steps=settings.total_steps,
         warmup_steps=settings.warmup_steps,
+        per_device_train_batch_size=1,       # VRAM 절약: batch_size=1 + accumulation
         gradient_accumulation_steps=settings.gradient_accumulation,
         beta=settings.kl_beta,
         epsilon=settings.clip_eps,
@@ -161,8 +167,9 @@ def build_grpo_trainer(
 
     # jsonl metrics logger — outputs/<run_name>/metrics.jsonl
     # 대시보드 (scripts/dashboard.py, scripts/plot_metrics.py)에서 읽음
-    from .callbacks import JsonlMetricsCallback
+    from .callbacks import JsonlMetricsCallback, PAVMonitorCallback
     trainer.add_callback(JsonlMetricsCallback(output_dir))
+    trainer.add_callback(PAVMonitorCallback(reward_fn, output_dir, dump_every=100))
 
     return trainer
 

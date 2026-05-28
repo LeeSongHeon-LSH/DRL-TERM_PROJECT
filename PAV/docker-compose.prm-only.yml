@@ -1,0 +1,61 @@
+# 추론 PC — PRM HTTP 서버만 실행 (μ vLLM 불필요 시)
+#
+# === 사용 ===
+#   cd PAV  # PAV의 설정 재사용
+#   FRPS_ADDR=<학습PC 공인IP/DDNS> FRPS_TOKEN=<frps 와 동일 토큰> NODE_NAME=<유일라벨> \
+#     docker compose -f docker-compose.prm-only.yml up -d --build
+#
+# === 용도 ===
+#   - PRM-GRPO 학습 전용 (Pure PRM, step-wise PRM)
+#   - μ vLLM이 필요 없는 경우 (PAV 학습이 아닌 경우)
+#   - PRM 서버만 추가로 스케일아웃할 때
+#
+# === NAT 친화 ===
+#   - 추론 PC 는 outbound TCP 만 (학습 PC :7000). NAT/CGNAT 무관.
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+
+services:
+  # ---------------------------- FRP Client (학습 PC 로 outbound tunnel) ----------------------------
+  frpc:
+    image: fatedier/frpc:v0.61.0
+    container_name: pav-frpc-prm-only
+    restart: unless-stopped
+    depends_on: [prm-server]
+    volumes:
+      - ./frp/frpc.toml:/etc/frp/frpc.toml:ro
+    environment:
+      FRPS_ADDR: "${FRPS_ADDR:-}"
+      FRPS_TOKEN: "${FRPS_TOKEN:-}"
+      NODE_NAME: "${NODE_NAME:-}"
+    command: ["-c", "/etc/frp/frpc.toml"]
+
+  # ---------------------------- PRM — FastAPI (port 8002) ----------------------------
+  prm-server:
+    build: .
+    image: pav-rl:latest
+    container_name: pav-prm-server
+    restart: unless-stopped
+    <<: *gpu
+    environment:
+      HF_HOME: /cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      PRM_CONFIG: /app/configs/prm.yaml
+    volumes:
+      - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
+      - ./configs:/app/configs:ro
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+    command: >
+      python scripts/serve_prm_http.py
+      --config /app/configs/prm.yaml
+      --host 0.0.0.0
+      --port 8002

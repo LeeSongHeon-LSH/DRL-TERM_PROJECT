@@ -87,18 +87,21 @@ class JsonlMetricsCallback(TrainerCallback):
 
 
 class PAVMonitorCallback(TrainerCallback):
-    """PAV reward 통계를 누적하고 wandb로 dump.
+    """PAV reward 통계를 누적하고 wandb로 dump + samples.jsonl 파일로 저장.
 
     PAVRewardFn에 stats_buffer/sample_buffer를 attach하여,
     매 reward 계산마다 자동으로 푸시되는 dict를 읽음.
     """
 
-    def __init__(self, reward_fn: "PAVRewardFn", dump_every: int = 1000, buf_size: int = 4096):
+    def __init__(self, reward_fn: "PAVRewardFn", output_dir: str | Path, dump_every: int = 1000, buf_size: int = 4096):
         self.reward_fn = reward_fn
         self.dump_every = max(1, dump_every)
         # reward_fn이 push할 큐 — Inplace로 attach
         reward_fn.stats_buffer = deque(maxlen=buf_size)
         reward_fn.sample_buffer = deque(maxlen=buf_size)
+        # samples.jsonl — 대시보드에서 개별 샘플/스텝별 보상 확인용
+        self.samples_path = Path(output_dir) / "samples.jsonl"
+        self.samples_path.parent.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------- callbacks
     def on_log(self, args, state, control, logs=None, **kwargs):
@@ -120,18 +123,36 @@ class PAVMonitorCallback(TrainerCallback):
         self.reward_fn.stats_buffer.clear()
 
     def on_step_end(self, args, state, control, **kwargs):
-        """주기적으로 sample을 덤프 — trivial-step 붕괴 검사용."""
+        """주기적으로 sample을 덤프 + FRP live replica 수 갱신 (학습 중간에 추론 PC 추가/제거 대응)."""
+        # --- FRP live replica refresh ---
+        # 100 step마다 FRP dashboard를 폴링해 살아있는 μ 서버 수를 갱신
+        if state.global_step > 0 and state.global_step % 100 == 0:
+            mu = getattr(self.reward_fn.pav, "mu", None)
+            if mu is not None and hasattr(mu, "refresh_live_replicas"):
+                try:
+                    new_count = mu.refresh_live_replicas()
+                    log.info(f"[PAVMonitor step={state.global_step}] FRP mu_cluster live replicas refreshed: {new_count}")
+                except Exception as e:
+                    log.warning(f"FRP refresh failed at step {state.global_step}: {e}")
+
+        # --- sample dump ---
         if state.global_step == 0 or state.global_step % self.dump_every != 0:
             return
         samples = list(self.reward_fn.sample_buffer)[-5:]
         if not samples:
             return
-        log.info(f"[PAVMonitor step={state.global_step}] {len(samples)} sample dump:")
-        for i, (problem, traj, rewards) in enumerate(samples):
-            log.info(f"  --- sample {i} (R_sum={sum(rewards):.3f}) ---")
-            log.info(f"  Q: {problem[:120]!r}")
-            for h, (s, r) in enumerate(zip(traj, rewards)):
-                log.info(f"    step {h} (r={r:+.3f}): {s.strip()[:140]!r}")
+        # samples.jsonl에 기록 (대시보드에서 확인)
+        with self.samples_path.open("a", encoding="utf-8") as f:
+            for problem, traj, rewards in samples:
+                record = {
+                    "step": state.global_step,
+                    "problem": problem,
+                    "trajectory": traj,
+                    "rewards": rewards,
+                    "total_reward": sum(rewards),
+                }
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        log.info(f"[PAVMonitor step={state.global_step}] {len(samples)} samples written to {self.samples_path}")
         try:
             import wandb
             if wandb.run is not None:

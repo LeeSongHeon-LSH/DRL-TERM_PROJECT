@@ -1,9 +1,9 @@
-# 학습 PC (3090 24 GB) — π trainer + FRP server + dashboard.
-# 추론 PC 들 (NAT 뒤) 이 FRP TCP tunnel 로 mu/PRM 서버 노출.
+# 학습 PC (3090 24 GB) — π trainer + dashboard.
+# FRP 서버는 deploy/docker-compose.yml 에서 별도 관리.
 #
 # === 사용 ===
-#   cp .env.example .env
-#   FRPS_TOKEN=<random-32+chars> FRPS_DASHBOARD_PW=<pw> docker compose up -d --build
+#   1. deploy/docker-compose.yml 로 FRP 서버 먼저 시작
+#   2. docker compose up -d --build
 #
 # === 컴포넌트 흐름 ===
 #   [추론 PC: 5070] frpc ──outbound TCP──► [학습 PC :7000 frps]
@@ -18,7 +18,7 @@
 #                                       (frps → frpc → 추론 PC mu/PRM)
 #
 # === 추론 PC 추가 ===
-#   추론 PC 에서 docker-compose.inference.yml 띄우면 자동으로 frpc 가 frps 에 등록 →
+#   추론 PC 에서 deploy/docker-compose.inference.yml 띄우면 자동으로 frpc 가 frps 에 등록 →
 #   별도 cluster discovery 스크립트 불필요. frps web dashboard (학습PC:7500) 에서 실시간 확인.
 #
 # === VRAM 예측 (24 GB GPU, 1.5B Full FT, μ/PRM remote) ===
@@ -30,32 +30,13 @@
 #   합계                              ~17 GB / 마진 ~7 GB ✅
 
 services:
-  # ---------------------------- FRP Server (TCP tunnel hub) ----------------------------
-  # 추론 PC 들의 frpc 가 7000 으로 outbound 접속 → 학습 PC 에 mu/PRM 가상 endpoint 노출.
-  # 학습 PC 공인 IP 의 router 가 TCP 7000 (control) + 18001~18099 (proxy) 포트포워딩 필요.
-  frps:
-    image: fatedier/frps:v0.61.0
-    container_name: pav-frps
-    restart: unless-stopped
-    ports:
-      - "7000:7000/tcp"           # frpc control connection (공인 IP 노출 필수)
-      - "7500:7500/tcp"           # web dashboard (학습 PC 내부망/VPN 만 노출 권장)
-      - "18001:18001/tcp"         # mu cluster (frps→trainer 직접 라우팅용, 모니터링)
-      - "18002:18002/tcp"         # prm cluster
-    volumes:
-      - ./frp/frps.toml:/etc/frp/frps.toml:ro
-    environment:
-      FRPS_TOKEN: ${FRPS_TOKEN:?FRPS_TOKEN required — generate random 32+ chars and pass inline}
-      FRPS_DASHBOARD_PW: ${FRPS_DASHBOARD_PW:-changeme}
-    command: ["-c", "/etc/frp/frps.toml"]
-
   # ---------------------------- π Trainer ----------------------------
   # frps service name 으로 18001/18002 접근 (docker compose 의 default bridge DNS).
+  # FRP 서버는 deploy/docker-compose.yml 에서 별도 관리.
   trainer:
     build: .
     image: pav-rl:latest
     container_name: pav-trainer
-    depends_on: [frps]
     deploy:
       resources:
         reservations:
@@ -73,6 +54,8 @@ services:
       # frps 컨테이너의 18001/18002 → load balancer group 의 mu/PRM replica 로 라우팅
       PRM_ENDPOINT: http://frps:18002
       MU_ENDPOINT: http://frps:18001
+      MU_REPLICAS: ${MU_REPLICAS:-1}
+      FRPS_DASHBOARD_URL: http://frps:7500
     volumes:
       - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
       - ./outputs:/app/outputs
@@ -85,6 +68,8 @@ services:
       --prm-config configs/prm.yaml
       --policy-config configs/policy.yaml
     shm_size: "8g"
+    networks:
+      - pav-shared-network
 
   # ---------------------------- Streamlit Dashboard (port 8501) ----------------------------
   # 학습 metrics 실시간 시각화. 학습과 독립 — trainer 죽어도 dashboard 살아있음.
@@ -100,3 +85,11 @@ services:
     volumes:
       - ./scripts:/app/scripts:ro
       - ./outputs:/app/outputs:ro
+    networks:
+      - pav-shared-network
+
+# 공유 네트워크 — PAV, PRM, step-wise-PRM 이 모두 연결
+networks:
+  pav-shared-network:
+    name: pav-shared-network
+    driver: bridge

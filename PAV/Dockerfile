@@ -1,4 +1,6 @@
+# syntax=docker/dockerfile:1
 # 단일 trainer 컨테이너 이미지 (PRM / μ / 정책 모두 로컬 GPU 적재).
+# BuildKit cache mount로 uv 다운로드 캐시 재사용.
 # 진짜 GPU에서 돌리려면 호스트에 NVIDIA Container Toolkit 설치 필요:
 #   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
 #
@@ -25,9 +27,13 @@ WORKDIR /app
 # 1) deps 먼저 (캐시 효과)
 COPY pyproject.toml ./
 COPY uv.lock* ./
+
+# BuildKit 캐시 마운트: uv 다운로드 캐시(/root/.cache/uv)를 재사용하여 네트워크 다운로드 최소화
 # torch는 호스트의 cu124 인덱스에서 받음. base 이미지의 torch는 덮어쓰일 수 있어 --reinstall로 강제 동기화
 # --extra serve: 추론 PC의 PRM FastAPI 서버(scripts/serve_prm_http.py)를 위해 fastapi/uvicorn 포함
-RUN uv sync --extra gpu --extra serve --no-dev --link-mode=copy
+ENV UV_LINK_MODE=copy
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --extra gpu --extra serve --no-dev --link-mode=copy
 
 # 2) 소스
 COPY src/ ./src/

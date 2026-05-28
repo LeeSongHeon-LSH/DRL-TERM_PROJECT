@@ -40,6 +40,9 @@ class PRMConfig:
     # ---- remote (HTTP)
     mode: str = "local"                       # "local" | "remote"
     remote: dict = field(default_factory=dict)
+    # ---- FRP LB pool (remote mode only)
+    num_replicas: int = 1
+    frps_dashboard_url: str = "http://frps:7500"
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "PRMConfig":
@@ -80,6 +83,9 @@ def load_prm(config: str | Path | PRMConfig | dict, **overrides: Any):
         env_endpoint = os.environ.get("PRM_ENDPOINT")
         if env_endpoint:
             remote["endpoint"] = env_endpoint
+        # FRP LB pool 설정 (yaml 또는 환경변수에서)
+        num_replicas = int(os.environ.get("PRM_REPLICAS", getattr(cfg, "num_replicas", 1)))
+        frps_dashboard_url = os.environ.get("FRPS_DASHBOARD_URL", getattr(cfg, "frps_dashboard_url", "http://frps:7500"))
         return RemotePRM(
             RemotePRMConfig(
                 name=cfg.name,
@@ -89,6 +95,8 @@ def load_prm(config: str | Path | PRMConfig | dict, **overrides: Any):
                 quantization=cfg.quantization,
                 batch_size=cfg.batch_size,
                 step_token=cfg.step_token,
+                num_replicas=num_replicas,
+                frps_dashboard_url=frps_dashboard_url,
             )
         )
     return PRM(cfg)

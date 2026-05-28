@@ -44,8 +44,6 @@ services:
     depends_on: [mu-server, prm-server]
     volumes:
       - ./frp/frpc.toml:/etc/frp/frpc.toml:ro
-    # FRPS_ADDR / FRPS_TOKEN / NODE_NAME 은 `up` 시 inline env 로 전달 필수 (없으면 frpc 가 connect 실패).
-    # `:?` 대신 `:-` 사용 — logs/ps/down 등 운영 명령은 env 없이 실행 가능하게.
     environment:
       FRPS_ADDR: "${FRPS_ADDR:-}"
       FRPS_TOKEN: "${FRPS_TOKEN:-}"
@@ -53,7 +51,6 @@ services:
     command: ["-c", "/etc/frp/frpc.toml"]
 
   # ---------------------------- μ — vLLM OpenAI API (port 8001) ----------------------------
-  # frpc 가 docker bridge 의 service name "mu-server" 로 reach.
   mu-server:
     build: .
     image: pav-rl:latest
@@ -96,8 +93,9 @@ services:
       - ./configs:/app/configs:ro
       - ./src:/app/src:ro
       - ./scripts:/app/scripts:ro
+      - ../FRP/scripts:/app/frp-scripts:ro
     command: >
-      python scripts/serve_prm_http.py
+      python /app/frp-scripts/serve_prm_http.py
       --config /app/configs/prm.yaml
       --host 0.0.0.0
       --port 8002

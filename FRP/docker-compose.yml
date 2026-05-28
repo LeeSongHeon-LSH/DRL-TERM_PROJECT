@@ -1,0 +1,39 @@
+# FRP 서버 — PAV, PRM, step-wise-PRM 이 공유하는 TCP tunnel hub
+#
+# === 사용 ===
+#   cd deploy
+#   FRPS_TOKEN=<random-32+chars> FRPS_DASHBOARD_PW=<pw> docker compose up -d
+#
+# === 컴포넌트 흐름 ===
+#   [추론 PC] frpc ──outbound TCP──► [학습 PC :7000 frps]
+#                                              │
+#                                              ▼
+#                            frps 가 localhost:18001 (mu), localhost:18002 (PRM) 노출
+#                            여러 추론 PC frpc 는 load balancer group 으로 round-robin
+#
+# === 네트워크 ===
+#   pav-shared-network — PAV, PRM, step-wise-PRM 의 docker compose 가 외부 네트워크로 연결
+
+services:
+  frps:
+    image: fatedier/frps:v0.61.0
+    container_name: pav-frps
+    restart: unless-stopped
+    ports:
+      - "7000:7000/tcp"           # frpc control connection (공인 IP 노출 필수)
+      - "7500:7500/tcp"           # web dashboard
+      - "18001:18001/tcp"         # mu cluster
+      - "18002:18002/tcp"         # prm cluster
+    volumes:
+      - ./frps.toml:/etc/frp/frps.toml:ro
+    environment:
+      FRPS_TOKEN: ${FRPS_TOKEN:?FRPS_TOKEN required — generate random 32+ chars and pass inline}
+      FRPS_DASHBOARD_PW: ${FRPS_DASHBOARD_PW:-changeme}
+    command: ["-c", "/etc/frp/frps.toml"]
+    networks:
+      - pav-shared-network
+
+networks:
+  pav-shared-network:
+    name: pav-shared-network
+    driver: bridge

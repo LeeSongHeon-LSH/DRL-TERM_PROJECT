@@ -77,6 +77,25 @@ def load_metrics(path: str) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+@st.cache_data(ttl=5)
+def load_samples(metrics_path: str) -> pd.DataFrame:
+    """metrics.jsonl 과 같은 디렉토리의 samples.jsonl 읽기."""
+    samples_path = Path(metrics_path).parent / "samples.jsonl"
+    if not samples_path.exists():
+        return pd.DataFrame()
+    records = []
+    with samples_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return pd.DataFrame(records)
+
+
 # ============================================================================
 st.set_page_config(page_title="PAV-RL Dashboard", layout="wide", page_icon="📈")
 st.title("PAV-RL 학습 대시보드")
@@ -91,6 +110,7 @@ with st.sidebar:
     st.caption("jsonl은 `src/train/callbacks.py:JsonlMetricsCallback`이 자동 적재")
 
 df = load_metrics(jsonl_path)
+samples_df = load_samples(jsonl_path)
 
 if df.empty:
     st.warning(f"`{jsonl_path}` 에서 metrics을 읽을 수 없습니다. 학습이 한 번 이상 돌아야 생성됨.")
@@ -142,6 +162,57 @@ with cols2[1]:
 with cols2[2]:
     st.subheader("Completion length")
     _chart(df, "completion_length", "tokens")
+
+st.markdown("---")
+
+# --- samples viewer (새로 추가)
+if not samples_df.empty:
+    st.header("📝 GRPO 샘플 상세 (문제 + Step별 보상)")
+    
+    # 최근 샘플 중 하나 선택
+    latest_step = int(samples_df["step"].max())
+    latest_samples = samples_df[samples_df["step"] == latest_step]
+    
+    sample_idx = st.selectbox(
+        "샘플 선택",
+        range(len(latest_samples)),
+        format_func=lambda i: f"샘플 {i+1} (step {latest_step}, total_reward={latest_samples.iloc[i]['total_reward']:.3f})"
+    )
+    
+    row = latest_samples.iloc[sample_idx]
+    
+    with st.container():
+        st.subheader("📌 문제")
+        st.markdown(f"```\n{row['problem']}\n```")
+        
+        st.subheader("🔢 Step별 풀이 및 보상")
+        
+        # Step별 보상 테이블
+        step_data = []
+        for h, (step_text, reward) in enumerate(zip(row["trajectory"], row["rewards"])):
+            step_data.append({
+                "Step": h + 1,
+                "보상": f"{reward:+.3f}",
+                "풀이": step_text.strip()[:200] + ("..." if len(step_text.strip()) > 200 else "")
+            })
+        
+        st.dataframe(step_data, use_container_width=True, hide_index=True)
+        
+        # Step별 보상 바 차트
+        import plotly.express as px
+        fig = px.bar(
+            x=[f"Step {i+1}" for i in range(len(row['rewards']))],
+            y=row['rewards'],
+            labels={"x": "Step", "y": "Reward"},
+            title=f"Step별 보상 분포 (Total: {row['total_reward']:.3f})"
+        )
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+        
+        st.markdown("---")
+        st.caption(f"step {row['step']} | 총 보상: {row['total_reward']:.3f}")
+else:
+    st.info("samples.jsonl 이 아직 생성되지 않았습니다. 학습이 진행되면 1000 step마다 자동 생성됩니다.")
 
 st.markdown("---")
 

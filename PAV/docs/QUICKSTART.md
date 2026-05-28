@@ -37,7 +37,7 @@ cd PAV
 cp .env.example .env   # PRM_ENDPOINT/MU_ENDPOINT 무시됨 (swap pipeline은 모두 local)
 
 # 빌드 + 시작 (trainer + dashboard 둘 다)
-docker compose -f docker-compose.single.yml up -d --build
+DOCKER_BUILDKIT=1 docker compose -f docker-compose.single.yml up -d --build
 docker compose -f docker-compose.single.yml logs -f trainer
 
 # Dashboard: http://localhost:8501
@@ -70,6 +70,21 @@ docker compose -f docker-compose.single.yml logs -f trainer
 
 
 현재 default: **π / μ = Qwen2.5-Math-1.5B Full FT**, PRM = Skywork 1.5B int8.
+
+---
+
+## ⚠️ BuildKit 필수 (모든 Docker 명령어 공통)
+
+모든 `Dockerfile`은 `RUN --mount=type=cache,target=/root/.cache/uv`를 사용하여 uv 다운로드 캐시를 재사용합니다. **BuildKit이 꺼져 있으면 `--mount` 문법 오류가 발생합니다.**
+
+```bash
+# BuildKit 활성화 (기본적으로 켜져 있지만, 명시적으로 설정 권장)
+export DOCKER_BUILDKIT=1
+
+# docker compose는 BuildKit을 자동으로 사용합니다.
+# 빌드 시 uv 다운로드 캐시가 재사용되어 네트워크 트래픽을 크게 줄입니다.
+# 아래 모든 docker compose 명령어는 이 환경변수가 설정된 것을 전제로 합니다.
+```
 
 ---
 
@@ -130,7 +145,7 @@ export FRPS_DASHBOARD_PW=<원하는 비번>
 echo "FRPS_TOKEN=$FRPS_TOKEN"             # ← 이 값 메모. 추론 PC + Section 2 에서 사용
 
 # frps 만 우선 띄움 (trainer 는 Section 2 에서)
-docker compose up -d --build frps
+DOCKER_BUILDKIT=1 docker compose up -d --build frps
 docker logs pav-frps | tail                # tcp listen 7000 + dashboard 7500 확인
 curl -s localhost:7500 | head              # dashboard HTML 응답 (admin / FRPS_DASHBOARD_PW)
 ```
@@ -154,11 +169,11 @@ cd PAV
 cp .env.example .env
 
 # 같은 LAN:
-docker compose -f docker-compose.inference.yml up -d --build
+DOCKER_BUILDKIT=1 docker compose -f docker-compose.inference.yml up -d --build
 
 # FRP TCP tunnel:
 FRPS_ADDR=<학습PC 공인IP/DDNS> FRPS_TOKEN=<frps 와 동일 토큰> NODE_NAME=<유일라벨> \
-  docker compose -f docker-compose.inference.yml up -d --build
+  DOCKER_BUILDKIT=1 docker compose -f docker-compose.inference.yml up -d --build
 ```
 
 VRAM 점유: **~18 GB / 24 GB** (μ 1.5B @ 0.85 → ~20 GB + PRM int8 ~4 GB).
@@ -166,13 +181,13 @@ VRAM 점유: **~18 GB / 24 GB** (μ 1.5B @ 0.85 → ~20 GB + PRM int8 ~4 GB).
 #### μ만 실행
 
 ```bash
-docker compose -f docker-compose.inference.yml up -d --build mu-server
+DOCKER_BUILDKIT=1 DOCKER_BUILDKIT=1 docker compose -f docker-compose.inference.yml up -d --build mu-server
 ```
 
 #### PRM만 실행
 
 ```bash
-docker compose -f docker-compose.inference.yml up -d --build prm-server
+DOCKER_BUILDKIT=1 DOCKER_BUILDKIT=1 docker compose -f docker-compose.inference.yml up -d --build prm-server
 ```
 
 상태 확인:
@@ -225,11 +240,11 @@ FRPS_ADDR=<학습PC 공인IP/DDNS> FRPS_TOKEN=<frps 와 동일 토큰> NODE_NAME
 
 # PRM 전용 5070 PC (Dockerfile.blackwell 빌드):
 FRPS_ADDR=<학습PC 공인IP/DDNS> FRPS_TOKEN=<frps 와 동일 토큰> NODE_NAME=5070-prm-01 \
-  docker compose -f docker-compose.inference-blackwell.yml up -d --build prm-server
+  DOCKER_BUILDKIT=1 docker compose -f docker-compose.inference-blackwell.yml up -d --build prm-server
 
 # 같은 LAN (FRP 안 씀):
 docker compose -f docker-compose.inference-blackwell.yml up -d mu-server   # μ 전용 PC
-docker compose -f docker-compose.inference-blackwell.yml up -d --build prm-server  # PRM 전용 PC
+DOCKER_BUILDKIT=1 docker compose -f docker-compose.inference-blackwell.yml up -d --build prm-server  # PRM 전용 PC
 ```
 
 상태 확인:
@@ -270,7 +285,7 @@ MU_ENDPOINT=http://192.168.1.10:8001
 기동:
 ```bash
 # 같은 LAN 이라 frps tunnel 불필요 — trainer + dashboard 만 (frps 안 띄움)
-docker compose up -d --build trainer dashboard
+DOCKER_BUILDKIT=1 docker compose up -d --build trainer dashboard
 docker compose logs -f trainer
 ```
 
@@ -285,7 +300,7 @@ MU_ENDPOINT=http://frps:18001
 기동:
 ```bash
 # 사전: 라우터 포트포워딩 TCP 7000 → 학습 PC LAN IP
-FRPS_TOKEN=<random-32+chars> docker compose up -d --build   # frps + trainer + dashboard
+FRPS_TOKEN=<random-32+chars> DOCKER_BUILDKIT=1 docker compose up -d --build   # frps + trainer + dashboard
 # 추론 PC 에서 docker compose -f docker-compose.inference.yml up -d (위 Section 1) →
 # frpc 가 자동으로 frps 에 등록, mu/PRM 가용 → 학습 즉시 시작 가능
 
@@ -549,7 +564,7 @@ uv run python scripts/plot_metrics.py
 
 frps 까지 띄운 상태에서 trainer + dashboard 추가:
 ```bash
-FRPS_TOKEN=<위 0-3 에서 발급한 토큰> docker compose up -d --build trainer dashboard
+FRPS_TOKEN=<위 0-3 에서 발급한 토큰> DOCKER_BUILDKIT=1 docker compose up -d --build trainer dashboard
 docker compose logs -f trainer
 ```
 
@@ -565,7 +580,7 @@ cp .env.example .env                  # MU_MODEL_ID, MU_GPU_MEM 등 조정
 # 학습 PC 의 frps 토큰 (학습 PC 에서 띄울 때 사용한 동일 값) 와 공인 IP/DDNS,
 # 노드 고유 라벨 inline 전달
 FRPS_ADDR=myhost.duckdns.org FRPS_TOKEN=<학습 PC 와 동일 토큰> NODE_NAME=5070-pc-01 \
-  docker compose -f docker-compose.inference.yml up -d --build
+  DOCKER_BUILDKIT=1 docker compose -f docker-compose.inference.yml up -d --build
 ```
 
 확인:
