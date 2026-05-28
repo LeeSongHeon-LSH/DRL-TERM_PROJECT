@@ -71,6 +71,7 @@ def main():
     trainer.add_callback(
         PAVMonitorCallback(
             reward_fn=reward_fn,
+            output_dir=trainer.args.output_dir,
             dump_every=rl_cfg.get("logging", {}).get("dump_samples_every", 1000),
         )
     )

@@ -100,7 +100,7 @@ def build_grpo_trainer(
         num_generations=settings.group_size,
         max_steps=settings.total_steps,
         warmup_steps=settings.warmup_steps,
-        per_device_train_batch_size=1,       # VRAM 절약: batch_size=1 + accumulation
+        per_device_train_batch_size=settings.group_size,  # num_generations 나눗셈 조건 충족
         gradient_accumulation_steps=settings.gradient_accumulation,
         beta=settings.kl_beta,
         epsilon=settings.clip_eps,

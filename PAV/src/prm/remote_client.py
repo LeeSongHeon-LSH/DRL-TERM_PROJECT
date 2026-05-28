@@ -63,6 +63,8 @@ class RemotePRM:
             resp = client.get(f"{self.cfg.frps_dashboard_url}/api/status")
             if resp.status_code != 200:
                 log.warning(f"FRP dashboard unreachable ({resp.status_code}) — fallback to cfg.num_replicas={self.cfg.num_replicas}")
+                with self._lock:
+                    self._live_replicas = self.cfg.num_replicas
                 return self.cfg.num_replicas
             data = resp.json()
             # proxyInfos 에서 prm_cluster group 에 속하고 online 인 것 카운트
@@ -81,6 +83,8 @@ class RemotePRM:
             return count
         except Exception as e:
             log.warning(f"FRP discovery failed ({e}) — fallback to cfg.num_replicas={self.cfg.num_replicas}")
+            with self._lock:
+                self._live_replicas = self.cfg.num_replicas
             return self.cfg.num_replicas
 
     def refresh_live_replicas(self) -> int:

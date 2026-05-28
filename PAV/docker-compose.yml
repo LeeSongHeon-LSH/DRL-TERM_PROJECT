@@ -52,10 +52,10 @@ services:
       PYTHONUNBUFFERED: "1"
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
       # frps 컨테이너의 18001/18002 → load balancer group 의 mu/PRM replica 로 라우팅
-      PRM_ENDPOINT: http://frps:18002
-      MU_ENDPOINT: http://frps:18001
+      PRM_ENDPOINT: ${PRM_ENDPOINT:-http://frps:18002}
+      MU_ENDPOINT: ${MU_ENDPOINT:-http://frps:18001}
       MU_REPLICAS: ${MU_REPLICAS:-1}
-      FRPS_DASHBOARD_URL: http://frps:7500
+      FRPS_DASHBOARD_URL: ${FRPS_DASHBOARD_URL:-http://frps:7500}
     volumes:
       - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
       - ./outputs:/app/outputs
