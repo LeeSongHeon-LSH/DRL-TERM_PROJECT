@@ -41,7 +41,6 @@ services:
     image: fatedier/frpc:v0.61.0
     container_name: pav-frpc
     restart: unless-stopped
-    depends_on: [mu-server, prm-server]
     volumes:
       - ./frp/frpc.toml:/etc/frp/frpc.toml:ro
     environment:
