@@ -93,9 +93,8 @@ services:
       - ./configs:/app/configs:ro
       - ./src:/app/src:ro
       - ./scripts:/app/scripts:ro
-      - ../FRP/scripts:/app/frp-scripts:ro
     command: >
-      python /app/frp-scripts/serve_prm_http.py
+      python /app/scripts/serve_prm_http.py
       --config /app/configs/prm.yaml
       --host 0.0.0.0
       --port 8002
