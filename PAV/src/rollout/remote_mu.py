@@ -28,7 +28,9 @@ class RemoteMuConfig:
     max_new_tokens: int = 256
     step_stop: tuple[str, ...] = ("\n\n",)
     num_replicas: int = 1    # FRP LB pool 에 등록된 μ 서버 수 (동시 요청 분할 수)
-    frps_dashboard_url: str = "http://frps:7500"   # FRP server dashboard (live replica 확인용)
+    frps_dashboard_url: str = "http://frps:7500"
+    frps_dashboard_user: str = field(default_factory=lambda: __import__("os").environ.get("FRPS_DASHBOARD_USER", "admin"))
+    frps_dashboard_password: str = field(default_factory=lambda: __import__("os").environ.get("FRPS_DASHBOARD_PASSWORD", "changeme"))
 
 class _CfgShim:
     """vLLM 어떤 코드도 cfg.model_id를 참조할 수 있게 — 호환용."""
@@ -60,22 +62,24 @@ class RemoteMuSampler:
             return self._live_replicas
 
         import httpx as _httpx
+        import base64
         try:
-            # frps dashboard /api/status 에서 proxy 목록 확인
+            # frps dashboard /api/proxy/tcp 에서 proxy 목록 확인 (v0.61)
+            auth_str = base64.b64encode(f"{self.cfg.frps_dashboard_user}:{self.cfg.frps_dashboard_password}".encode()).decode()
+            headers = {"Authorization": f"Basic {auth_str}"}
             client = self._get_client()
-            resp = client.get(f"{self.cfg.frps_dashboard_url}/api/status")
+            resp = client.get(f"{self.cfg.frps_dashboard_url}/api/proxy/tcp", headers=headers)
             if resp.status_code != 200:
                 log.warning(f"FRP dashboard unreachable ({resp.status_code}) — fallback to cfg.num_replicas={self.cfg.num_replicas}")
                 with self._lock:
                     self._live_replicas = self.cfg.num_replicas
                 return self.cfg.num_replicas
             data = resp.json()
-            # proxyInfos 에서 mu_cluster group 에 속하고 online 인 것 카운트
-            proxies = data.get("proxyInfos", [])
+            # proxies 에서 mu_cluster group 에 속하고 online 인 것 카운트
+            proxies = data.get("proxies", [])
             count = 0
             for p in proxies:
                 if p.get("conf", {}).get("loadBalancer", {}).get("group") == "mu_cluster":
-                    # status: online / offline
                     if p.get("status") == "online":
                         count += 1
             if count == 0:

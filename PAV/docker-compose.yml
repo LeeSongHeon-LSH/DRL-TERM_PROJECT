@@ -1,8 +1,8 @@
-# 학습 PC (3090 24 GB) — π trainer + dashboard.
-# FRP 서버는 deploy/docker-compose.yml 에서 별도 관리.
+# 학습 PC (3090 24 GB) — π trainer + dashboard + frpc.
+# FRP 서버는 FRP/docker-compose.yml 에서 별도 관리.
 #
 # === 사용 ===
-#   1. deploy/docker-compose.yml 로 FRP 서버 먼저 시작
+#   1. FRP/docker-compose.yml 로 FRP 서버 먼저 시작
 #   2. docker compose up -d --build
 #
 # === 컴포넌트 흐름 ===
@@ -18,7 +18,7 @@
 #                                       (frps → frpc → 추론 PC mu/PRM)
 #
 # === 추론 PC 추가 ===
-#   추론 PC 에서 deploy/docker-compose.inference.yml 띄우면 자동으로 frpc 가 frps 에 등록 →
+#   추론 PC 에서 docker-compose.inference.yml 띄우면 자동으로 frpc 가 frps 에 등록 →
 #   별도 cluster discovery 스크립트 불필요. frps web dashboard (학습PC:7500) 에서 실시간 확인.
 #
 # === VRAM 예측 (24 GB GPU, 1.5B Full FT, μ/PRM remote) ===
@@ -32,7 +32,7 @@
 services:
   # ---------------------------- π Trainer ----------------------------
   # frps service name 으로 18001/18002 접근 (docker compose 의 default bridge DNS).
-  # FRP 서버는 deploy/docker-compose.yml 에서 별도 관리.
+  # FRP 서버는 FRP/docker-compose.yml 에서 별도 관리.
   trainer:
     build: .
     image: pav-rl:latest
@@ -56,6 +56,8 @@ services:
       MU_ENDPOINT: ${MU_ENDPOINT:-http://frps:18001}
       MU_REPLICAS: ${MU_REPLICAS:-1}
       FRPS_DASHBOARD_URL: ${FRPS_DASHBOARD_URL:-http://frps:7500}
+      FRPS_DASHBOARD_USER: ${FRPS_DASHBOARD_USER:-admin}
+      FRPS_DASHBOARD_PASSWORD: ${FRPS_DASHBOARD_PASSWORD:-changeme}
     volumes:
       - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
       - ./outputs:/app/outputs
@@ -68,6 +70,22 @@ services:
       --prm-config configs/prm.yaml
       --policy-config configs/policy.yaml
     shm_size: "8g"
+    networks:
+      - pav-shared-network
+
+  # ---------------------------- FRP Client (frpc) ----------------------------
+  # 학습 PC에서도 frpc를 띄워 dashboard 등을 외부에 노출.
+  frpc:
+    image: fatedier/frpc:v0.61.0
+    container_name: pav-frpc
+    restart: unless-stopped
+    volumes:
+      - ./frp/frpc.toml:/etc/frp/frpc.toml:ro
+    environment:
+      FRPS_ADDR: ${FRPS_ADDR:?FRPS_ADDR required — 학습 PC의 공인 IP 또는 DDNS}
+      FRPS_TOKEN: ${FRPS_TOKEN:?FRPS_TOKEN required}
+      NODE_NAME: ${NODE_NAME:-pav-trainer-pc}
+    command: ["-c", "/etc/frp/frpc.toml"]
     networks:
       - pav-shared-network
 

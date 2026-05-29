@@ -10,7 +10,8 @@ FROM python:3.11-slim
 RUN pip install --no-cache-dir \
     streamlit>=1.30 \
     pandas>=2.0 \
-    matplotlib>=3.8
+    matplotlib>=3.8 \
+    plotly>=5.18
 
 WORKDIR /app
 

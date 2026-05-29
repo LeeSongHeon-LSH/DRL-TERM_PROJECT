@@ -138,7 +138,7 @@ class PAVMonitorCallback(TrainerCallback):
         # --- sample dump ---
         if state.global_step == 0 or state.global_step % self.dump_every != 0:
             return
-        samples = list(self.reward_fn.sample_buffer)[-5:]
+        samples = list(self.reward_fn.sample_buffer)
         if not samples:
             return
         # samples.jsonl에 기록 (대시보드에서 확인)

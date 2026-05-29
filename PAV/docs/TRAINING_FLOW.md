@@ -122,7 +122,71 @@ flowchart TB
 
 ---
 
-## 3. 분산 모드 — 한 step의 HTTP 시퀀스 (Phase 1, K=16)
+## 3. 학습 타임라인 (1 Optimizer Step)
+
+`gradient_accumulation_steps=8` 설정 시, 1개의 optimizer step은 아래와 같이 8개 micro-batch를 순차 처리합니다.
+
+```mermaid
+gantt
+    title 1 Optimizer Step = 8 Micro-batches (Effective Batch = 64)
+    dateFormat HH:mm:ss
+    axisFormat %M:%S
+
+    section Micro-batch 1 (8 samples)
+    vLLM generate (π rollout)       :done, 00:00:00, 00:00:15
+    split_steps + verifier (CPU)    : 00:00:15, 00:00:16
+    Step-wise μ+PRM (×H steps)      :crit, 00:00:16, 00:00:23
+    Reward sum + advantage (GPU)    : 00:00:23, 00:00:26
+    Backward + grad accum           :done, 00:00:26, 00:00:38
+
+    section Micro-batch 2 (8 samples)
+    vLLM generate (π rollout)       :done, 00:00:38, 00:00:53
+    split_steps + verifier (CPU)    : 00:00:53, 00:00:54
+    Step-wise μ+PRM (×H steps)      :crit, 00:00:54, 00:01:01
+    Reward sum + advantage (GPU)    : 00:01:01, 00:01:04
+    Backward + grad accum           :done, 00:01:04, 00:01:16
+
+    section Micro-batch 3 (8 samples)
+    vLLM generate (π rollout)       :done, 00:01:16, 00:01:31
+    split_steps + verifier (CPU)    : 00:01:31, 00:01:32
+    Step-wise μ+PRM (×H steps)      :crit, 00:01:32, 00:01:39
+    Reward sum + advantage (GPU)    : 00:01:39, 00:01:42
+    Backward + grad accum           :done, 00:01:42, 00:01:54
+
+    section Micro-batch 4 (8 samples)
+    vLLM generate (π rollout)       :done, 00:01:54, 00:02:09
+    split_steps + verifier (CPU)    : 00:02:09, 00:02:10
+    Step-wise μ+PRM (×H steps)      :crit, 00:02:10, 00:02:17
+    Reward sum + advantage (GPU)    : 00:02:17, 00:02:20
+    Backward + grad accum           :done, 00:02:20, 00:02:32
+
+    section Micro-batch 5-7
+    ... (3 more)                    : 00:02:32, 00:04:56
+
+    section Micro-batch 8 (8 samples)
+    vLLM generate (π rollout)       :done, 00:04:56, 00:05:11
+    split_steps + verifier (CPU)    : 00:05:11, 00:05:12
+    Step-wise μ+PRM (×H steps)      :crit, 00:05:12, 00:05:19
+    Reward sum + advantage (GPU)    : 00:05:19, 00:05:22
+    Backward + grad accum           :done, 00:05:22, 00:05:34
+
+    section Optimizer
+    optimizer.step()                :milestone, 00:05:34, 00:05:35
+```
+
+- **Micro-batch** = 8개 샘플 (`per_device_train_batch_size=8`)
+- **Gradient Accumulation** = 8회 반복
+- **Effective Batch** = 8 × 8 = 64개 샘플
+- **Optimizer.step()** = 8개 micro-batch 끝난 후 **1번만** 실행
+
+**GPU 사용 패턴:**
+- **큰 피크** (CUDA 100%): vLLM rollout 생성 + Policy backward
+- **작은 피크** (CUDA 30%): Reward/Advantage/KL 계산
+- **사이 텀** (CUDA 0%): PRM HTTP 요청/응답 대기 (네트워크 I/O)
+
+---
+
+## 4. 분산 모드 — 한 step의 HTTP 시퀀스 (Phase 1, K=16)
 
 ```mermaid
 sequenceDiagram
@@ -168,7 +232,7 @@ sequenceDiagram
 
 ---
 
-## 4. 4주 실행 단계와 게이트
+## 5. 4주 실행 단계와 게이트
 
 ```mermaid
 flowchart TB
@@ -213,7 +277,7 @@ flowchart TB
 
 ---
 
-## 5. PAVMethod Protocol + transport 추상화
+## 6. PAVMethod Protocol + transport 추상화
 
 ```mermaid
 flowchart LR
@@ -257,7 +321,7 @@ flowchart LR
 
 ---
 
-## 6. 권장 사양
+## 7. 권장 사양
 
 ### 6.1 단일 PC
 

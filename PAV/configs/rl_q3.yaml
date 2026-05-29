@@ -20,10 +20,10 @@ reward:
 
 # GRPO
 grpo:
-  group_size: 4             # 같은 문제에서 4 rollout (CAME으로 옵티마이저 메모리 풍부 → 4 복원, advantage 추정 품질 ↑)
-  kl_beta: 0.04             # anti-hacking
+  group_size: 8             # 같은 문제에서 8 rollout — advantage 추정 품질 ↑, GRPO 권장 최소값
+  kl_beta: 0.04             # anti-hacking (DeepSeekMath/GRPO 원논문 기준)
   clip_eps: 0.2
-  learning_rate: 5.0e-7     # 1.5B Full FT 기준 (LoRA였다면 5e-6 — 10× 큼)
+  learning_rate: 2.0e-6     # 1.5B Full FT 기준 — 5e-7은 너무 보수적, 2e-6으로 상향
   total_steps: 5000            # 본격 학습. step time 50s × 5000 = ~70시간
   warmup_steps: 50             # 5000 step의 1% (smoke는 5)
   gradient_accumulation: 8     # batch_size=1 대비 높게 — VRAM 절약
@@ -63,7 +63,7 @@ vllm:
 # 로깅
 logging:
   wandb_project:               # 빈 값 → wandb 비활성, stdout만
-  wandb_run_name: stage8_smoke
+  wandb_run_name: PAV-distribution-test
   log_every: 1                # 매 step metrics 기록 (dashboard/jsonl 세밀하게)
   eval_every: 100             # 500→100: CUDA unknown error로 step 224에서 죽었던 사례 — 더 자주 체크포인트 저장 (resume 가능)
-  dump_samples_every: 1000   # trivial-step 함정 모니터링
+  dump_samples_every: 10    # trivial-step 함정 모니터링 — 10 step마다 samples.jsonl 기록

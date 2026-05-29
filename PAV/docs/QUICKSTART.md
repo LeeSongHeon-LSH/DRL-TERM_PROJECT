@@ -284,8 +284,9 @@ MU_ENDPOINT=http://192.168.1.10:8001
 
 기동:
 ```bash
-# 같은 LAN 이라 frps tunnel 불필요 — trainer + dashboard 만 (frps 안 띄움)
-DOCKER_BUILDKIT=1 docker compose up -d --build trainer dashboard
+# 같은 LAN 이라도 frps 를 띄워야 dashboard (port 7500) 가 정상 작동
+# frps 는 학습 PC 에서 localhost:7500 로 dashboard 제공 + 추론 PC frpc 등록 대기
+DOCKER_BUILDKIT=1 docker compose up -d --build frps trainer dashboard
 docker compose logs -f trainer
 ```
 
@@ -305,10 +306,10 @@ MU_ENDPOINT=http://frps:18001
 
 기동:
 ```bash
-# 로컬 frps 컨테이너일 때만:
-# FRPS_TOKEN=<random-32+chars> DOCKER_BUILDKIT=1 docker compose up -d --build   # frps + trainer + dashboard
+# 로컬 frps 컨테이너일 때 (dashboard + frpc 등록 대기):
+FRPS_TOKEN=<random-32+chars> DOCKER_BUILDKIT=1 docker compose up -d --build frps trainer dashboard
 
-# 원격 FRPS host 를 쓸 때 (예시):
+# 원격 FRPS host 를 쓸 때 (dashboard 는 원격 frps 에서, 학습 PC 에서는 trainer + dashboard 만):
 # PRM_ENDPOINT=http://<FRPS_PUBLIC_IP_OR_DNS>:18002 \
 # MU_ENDPOINT=http://<FRPS_PUBLIC_IP_OR_DNS>:18001 \
 # FRPS_DASHBOARD_URL=http://<FRPS_PUBLIC_IP_OR_DNS>:7500 \
