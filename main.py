@@ -115,6 +115,17 @@ def run_eval(config: EvalConfig):
 
     model, tokenizer = load_model_and_tokenizer(config)
 
+    # Warm-up: trigger CUDA kernel compilation before the main loop.
+    # On new architectures (e.g. Blackwell) the first generate() call compiles
+    # kernels and can take 30-60 min with no output — this makes it visible.
+    print("\nWarm-up pass (first-run CUDA kernel compilation may take a while)...")
+    t_warmup = time.time()
+    _dummy = tokenizer("warmup", return_tensors="pt").to(next(model.parameters()).device)
+    with torch.no_grad():
+        model.generate(**_dummy, max_new_tokens=4, do_sample=False)
+    del _dummy
+    print(f"Warm-up done in {time.time() - t_warmup:.1f}s — starting evaluation.\n")
+
     year_metrics: dict[int, dict] = {}
     t_total = time.time()
 

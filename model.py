@@ -41,12 +41,23 @@ def load_model_and_tokenizer(config: EvalConfig):
     print(f"Loading model: {config.model_name}")
     dtype = getattr(torch, config.dtype)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        config.model_name,
-        torch_dtype=dtype,
-        device_map="auto",
-        attn_implementation="sdpa",
-    )
+    # Try flash_attention_2 first (faster on Ampere+); fall back to sdpa for Blackwell
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            config.model_name,
+            torch_dtype=dtype,
+            device_map="auto",
+            attn_implementation="flash_attention_2",
+        )
+        print("  Using flash_attention_2")
+    except Exception:
+        model = AutoModelForCausalLM.from_pretrained(
+            config.model_name,
+            torch_dtype=dtype,
+            device_map="auto",
+            attn_implementation="sdpa",
+        )
+        print("  Using sdpa (flash_attention_2 not available)")
     model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
@@ -55,8 +66,15 @@ def load_model_and_tokenizer(config: EvalConfig):
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     device = next(model.parameters()).device
+    vram_used = torch.cuda.memory_allocated(device) / 1e9
+    vram_total = torch.cuda.get_device_properties(device).total_memory / 1e9
     print(f"  Model on device: {device}  |  dtype: {dtype}")
-    print(f"  VRAM allocated:  {torch.cuda.memory_allocated(device) / 1e9:.2f} GB")
+    print(f"  VRAM: {vram_used:.2f} GB used / {vram_total:.1f} GB total")
+    if vram_used > vram_total * 0.9:
+        raise RuntimeError(
+            f"Model uses {vram_used:.1f}/{vram_total:.1f} GB VRAM. "
+            "Try --dtype float16 or a smaller model."
+        )
     return model, tokenizer
 
 
