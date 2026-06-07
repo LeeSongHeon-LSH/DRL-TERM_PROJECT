@@ -1,10 +1,17 @@
 """
-AIME 2023/2024/2025 evaluation with Qwen2.5-1.5B-Instruct + Wandb dashboard.
+AIME 2023/2024/2025 — pass@k evaluation with per-year wandb runs + comparison dashboard.
+
+Wandb runs created:
+  <base>-2023        : AIME 2023 results (pass@k metrics, per-problem table, difficulty curve)
+  <base>-2024        : AIME 2024 results
+  <base>-2025        : AIME 2025 results
+  <base>-comparison  : cross-year comparison table and bar charts
 
 Usage:
-    python main.py                                # defaults: all three years
-    python main.py --years 2024 2025             # specific years
-    python main.py --batch-size 8 --dtype float16
+    python main.py                              # pass@256, all three years
+    python main.py --num-samples 32            # quick smoke-test
+    python main.py --years 2024 2025           # specific years only
+    python main.py --no-sample                 # greedy pass@1
     python main.py --wandb-entity my-team
 """
 
@@ -16,17 +23,18 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from config import parse_args
+from config import EvalConfig, parse_args
 from dataset import AIMEProblem, load_aime_problems
 from evaluate import (
     ProblemResult,
     extract_answer,
     init_wandb,
-    log_to_wandb,
+    log_year_to_wandb,
+    log_comparison_to_wandb,
     save_results,
     score_results,
 )
-from model import build_chat_prompt, generate_batch, load_model_and_tokenizer
+from model import build_chat_prompt, generate_samples, load_model_and_tokenizer
 
 
 def set_seed(seed: int):
@@ -39,7 +47,7 @@ def set_seed(seed: int):
 
 def check_gpu():
     if not torch.cuda.is_available():
-        print("WARNING: CUDA not available — running on CPU (will be slow).")
+        print("WARNING: CUDA not available — running on CPU (will be very slow).")
         return
     for i in range(torch.cuda.device_count()):
         props = torch.cuda.get_device_properties(i)
@@ -50,78 +58,102 @@ def check_gpu():
         )
 
 
-def run_eval(config):
+def eval_year(
+    year: int,
+    problems: list[AIMEProblem],
+    model,
+    tokenizer,
+    config: EvalConfig,
+) -> list[ProblemResult]:
+    """Generate pass@k samples for every problem in one year."""
+    print(f"\n[AIME {year}] {len(problems)} problems × {config.num_samples} samples each")
+    results: list[ProblemResult] = []
+
+    for problem in tqdm(problems, desc=f"AIME {year}", unit="problem"):
+        prompt = build_chat_prompt(problem.problem, tokenizer)
+        raw_outputs = generate_samples(model, tokenizer, prompt, config)
+        predicted = [extract_answer(o) for o in raw_outputs]
+        n_correct = sum(1 for p in predicted if p == problem.answer)
+        results.append(ProblemResult(
+            problem=problem,
+            raw_outputs=raw_outputs,
+            predicted_answers=predicted,
+            n_correct=n_correct,
+            n_samples=config.num_samples,
+        ))
+
+    return results
+
+
+def print_year_summary(year: int, metrics: dict, elapsed: float):
+    print(f"\n{'='*60}")
+    print(f"AIME {year} — Results  ({elapsed:.1f}s)")
+    print(f"{'='*60}")
+    for k, v in sorted(metrics.items()):
+        if isinstance(v, float):
+            print(f"  {k:<40} {v:.1%}")
+        else:
+            print(f"  {k:<40} {v}")
+
+
+def run_eval(config: EvalConfig):
     set_seed(config.seed)
 
     print("=" * 60)
-    print("AIME Evaluation  |  Model:", config.model_name)
+    print(f"AIME pass@k Evaluation  |  Model: {config.model_name}")
+    print(f"  num_samples={config.num_samples}  "
+          f"sample_batch_size={config.sample_batch_size}  "
+          f"pass_k={config.pass_k_values}")
     print("=" * 60)
     check_gpu()
 
-    # 1. Load datasets
     year_data = load_aime_problems(config.years)
-    all_problems: list[AIMEProblem] = [p for y in config.years for p in year_data[y]]
 
-    if not all_problems:
+    if not any(year_data.values()):
         print("No problems loaded. Exiting.")
         sys.exit(1)
 
-    print(f"\nTotal problems to evaluate: {len(all_problems)}")
-
-    # 2. Load model
     model, tokenizer = load_model_and_tokenizer(config)
 
-    # 3. Build prompts
-    prompts = [build_chat_prompt(p.problem, tokenizer) for p in all_problems]
+    year_metrics: dict[int, dict] = {}
+    t_total = time.time()
 
-    # 4. Run inference with progress bar
-    print(f"\nRunning inference (batch_size={config.batch_size}) ...")
-    raw_outputs: list[str] = []
-    t0 = time.time()
+    # -----------------------------------------------------------------------
+    # Per-year loop: infer → score → wandb run → save JSON
+    # -----------------------------------------------------------------------
+    for year in config.years:
+        problems = year_data.get(year, [])
+        if not problems:
+            print(f"\nNo problems for AIME {year}, skipping.")
+            continue
 
-    with tqdm(total=len(all_problems), unit="problem") as pbar:
-        for start in range(0, len(prompts), config.batch_size):
-            batch_prompts   = prompts[start : start + config.batch_size]
-            batch_outputs   = generate_batch(model, tokenizer, batch_prompts, config)
-            raw_outputs.extend(batch_outputs)
-            pbar.update(len(batch_prompts))
+        t0 = time.time()
+        results = eval_year(year, problems, model, tokenizer, config)
+        elapsed = time.time() - t0
 
-    elapsed = time.time() - t0
-    print(f"Inference done in {elapsed:.1f}s  ({elapsed / len(all_problems):.1f}s/problem)")
+        metrics = score_results(results, config)
+        year_metrics[year] = metrics
 
-    # 5. Score
-    results: list[ProblemResult] = []
-    for problem, raw in zip(all_problems, raw_outputs):
-        predicted = extract_answer(raw)
-        correct   = predicted is not None and predicted == problem.answer
-        results.append(ProblemResult(
-            problem=problem,
-            raw_output=raw,
-            predicted=predicted,
-            correct=correct,
-        ))
+        print_year_summary(year, metrics, elapsed)
 
-    metrics = score_results(results)
+        run = init_wandb(config, suffix=str(year))
+        log_year_to_wandb(results, metrics, config, year)
+        run.finish()
 
-    # 6. Print console summary
-    print("\n" + "=" * 60)
-    print("RESULTS SUMMARY")
-    print("=" * 60)
-    for key, val in sorted(metrics.items()):
-        if isinstance(val, float):
-            print(f"  {key:<40} {val:.1%}")
-        else:
-            print(f"  {key:<40} {val}")
+        save_results(results, metrics, config, year)
 
-    # 7. Log to Wandb
-    run = init_wandb(config)
-    log_to_wandb(results, metrics, config)
-    run.finish()
+    # -----------------------------------------------------------------------
+    # Cross-year comparison dashboard
+    # -----------------------------------------------------------------------
+    if len(year_metrics) > 1:
+        print(f"\n{'='*60}")
+        print("Logging cross-year comparison dashboard ...")
+        run = init_wandb(config, suffix="comparison")
+        log_comparison_to_wandb(year_metrics, config)
+        run.finish()
 
-    # 8. Save JSON
-    save_results(results, metrics, config)
-
-    print("\nDone.")
+    print(f"\nTotal wall-clock time: {(time.time() - t_total) / 60:.1f} min")
+    print("Done.")
 
 
 if __name__ == "__main__":

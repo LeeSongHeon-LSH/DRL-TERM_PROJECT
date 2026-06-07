@@ -1,9 +1,10 @@
 """
-Qwen2.5-1.5B-Instruct loader and batch inference.
-Optimised for RTX 5060 (Blackwell, sm_120):
-  - bfloat16  → native Blackwell precision
-  - SDPA      → PyTorch built-in scaled-dot-product attention (safe on all CUDA GPUs)
-  - left-pad  → correct batch generation
+Qwen2.5-1.5B-Instruct loader and sampling-based inference for pass@k evaluation.
+
+Key design:
+  - generate_samples() produces N completions for a single prompt
+  - sub-batching via num_return_sequences keeps VRAM usage bounded
+  - bfloat16 + SDPA for Blackwell (RTX 50xx) compatibility
 """
 
 import torch
@@ -25,7 +26,6 @@ where N is your integer answer (e.g. \\boxed{42})."""
 
 
 def build_chat_prompt(problem: str, tokenizer) -> str:
-    """Format a single problem as a Qwen2.5-Instruct chat prompt."""
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user",   "content": problem},
@@ -38,13 +38,9 @@ def build_chat_prompt(problem: str, tokenizer) -> str:
 
 
 def load_model_and_tokenizer(config: EvalConfig):
-    """Load Qwen2.5-1.5B-Instruct with settings tuned for the RTX 5060."""
     print(f"Loading model: {config.model_name}")
-
     dtype = getattr(torch, config.dtype)
 
-    # SDPA is always available in PyTorch 2.x and works on Blackwell without
-    # needing a compiled flash-attention wheel.
     model = AutoModelForCausalLM.from_pretrained(
         config.model_name,
         torch_dtype=dtype,
@@ -54,8 +50,6 @@ def load_model_and_tokenizer(config: EvalConfig):
     model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
-    # Left-pad so that all sequences in a batch end at the same position
-    # (required for correct greedy / sampling generation on padded batches)
     tokenizer.padding_side = "left"
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -63,51 +57,56 @@ def load_model_and_tokenizer(config: EvalConfig):
     device = next(model.parameters()).device
     print(f"  Model on device: {device}  |  dtype: {dtype}")
     print(f"  VRAM allocated:  {torch.cuda.memory_allocated(device) / 1e9:.2f} GB")
-
     return model, tokenizer
 
 
-def generate_batch(
+def generate_samples(
     model,
     tokenizer,
-    prompts: List[str],
+    prompt: str,
     config: EvalConfig,
 ) -> List[str]:
     """
-    Run inference on a list of prompts in mini-batches.
-    Returns decoded new-token strings (input tokens stripped).
+    Generate config.num_samples completions for a single prompt.
+
+    Splits the request into sub-batches of config.sample_batch_size
+    (num_return_sequences per call) to keep VRAM usage bounded.
+    Returns a flat list of decoded strings (input tokens stripped).
     """
+    inputs = tokenizer(
+        [prompt],
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=4096,
+    ).to(model.device)
+    input_len = inputs["input_ids"].shape[1]
+
+    gen_kwargs: dict = {
+        "max_new_tokens": config.max_new_tokens,
+        "pad_token_id":   tokenizer.pad_token_id,
+        "eos_token_id":   tokenizer.eos_token_id,
+    }
+    if config.do_sample and config.temperature > 0:
+        gen_kwargs["do_sample"]   = True
+        gen_kwargs["temperature"] = config.temperature
+    else:
+        gen_kwargs["do_sample"] = False
+
     all_outputs: List[str] = []
+    remaining = config.num_samples
 
-    for start in range(0, len(prompts), config.batch_size):
-        batch = prompts[start : start + config.batch_size]
-
-        inputs = tokenizer(
-            batch,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=4096,       # hard cap on input length
-        ).to(model.device)
-
-        gen_kwargs = dict(
-            max_new_tokens=config.max_new_tokens,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
-        if config.do_sample and config.temperature > 0:
-            gen_kwargs["do_sample"] = True
-            gen_kwargs["temperature"] = config.temperature
-        else:
-            gen_kwargs["do_sample"] = False
-
+    while remaining > 0:
+        n = min(config.sample_batch_size, remaining)
         with torch.no_grad():
-            generated_ids = model.generate(**inputs, **gen_kwargs)
-
-        # Strip the echoed input tokens — only decode newly generated tokens
-        input_len = inputs["input_ids"].shape[1]
+            generated_ids = model.generate(
+                **inputs,
+                num_return_sequences=n,
+                **gen_kwargs,
+            )
         new_ids = generated_ids[:, input_len:]
         decoded = tokenizer.batch_decode(new_ids, skip_special_tokens=True)
         all_outputs.extend(decoded)
+        remaining -= n
 
     return all_outputs
