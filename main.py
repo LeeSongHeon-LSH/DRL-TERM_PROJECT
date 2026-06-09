@@ -15,9 +15,13 @@ Usage:
     python main.py --wandb-entity my-team
 """
 
+import os
 import random
 import sys
 import time
+
+# FlashInfer requires sm75+ (Turing); disable it for older GPUs.
+os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
 
 import numpy as np
 import torch
