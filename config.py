@@ -12,11 +12,16 @@ class EvalConfig:
     # Generation
     max_new_tokens: int = 2048
     temperature: float = 0.7        # >0 required for pass@k sampling
+    top_p: float = 0.95             # nucleus sampling (vLLM)
     do_sample: bool = True
 
+    # vLLM engine
+    gpu_memory_utilization: float = 0.90   # fraction of VRAM for weights + KV cache
+    max_model_len: int = 4096              # prompt + max_new_tokens budget
+
     # pass@k
-    num_samples: int = 256          # samples generated per problem
-    sample_batch_size: int = 16     # num_return_sequences per model.generate() call
+    num_samples: int = 256          # samples generated per problem (vLLM n=N in one call)
+    sample_batch_size: int = 16     # (unused with vLLM; kept for CLI back-compat)
     pass_k_values: List[int] = field(default_factory=lambda: [1, 8, 64, 256])
 
     # Evaluation
@@ -39,6 +44,11 @@ def parse_args() -> EvalConfig:
                         choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--max-new-tokens",    type=int,   default=2048)
     parser.add_argument("--temperature",       type=float, default=0.7)
+    parser.add_argument("--top-p",             type=float, default=0.95)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.90,
+                        help="Fraction of VRAM vLLM may use for weights + KV cache")
+    parser.add_argument("--max-model-len",     type=int,   default=4096,
+                        help="vLLM max sequence length (prompt + generated tokens)")
     parser.add_argument("--no-sample",         action="store_true",
                         help="Greedy decoding — forces num_samples=1")
     parser.add_argument("--num-samples",       type=int,   default=256,
@@ -66,6 +76,9 @@ def parse_args() -> EvalConfig:
         dtype=args.dtype,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
+        top_p=args.top_p,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        max_model_len=args.max_model_len,
         do_sample=do_sample,
         num_samples=num_samples,
         sample_batch_size=args.sample_batch_size,

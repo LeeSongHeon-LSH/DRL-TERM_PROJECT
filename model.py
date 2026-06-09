@@ -1,15 +1,18 @@
 """
 Qwen2.5-1.5B-Instruct loader and sampling-based inference for pass@k evaluation.
 
+Backend: vLLM (continuous batching) — generates all N completions for a prompt
+in a single request via SamplingParams(n=N), which is dramatically faster than
+sequential HuggingFace `generate()` sub-batching.
+
 Key design:
-  - generate_samples() produces N completions for a single prompt
-  - sub-batching via num_return_sequences keeps VRAM usage bounded
-  - bfloat16 + SDPA for Blackwell (RTX 50xx) compatibility
+  - load_model_and_tokenizer() builds a vLLM engine + returns its tokenizer
+  - generate_samples() produces N completions for a single prompt in one call
 """
 
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import List
+
+from vllm import LLM, SamplingParams
 
 from config import EvalConfig
 
@@ -38,44 +41,49 @@ def build_chat_prompt(problem: str, tokenizer) -> str:
 
 
 def load_model_and_tokenizer(config: EvalConfig):
-    print(f"Loading model: {config.model_name}")
-    dtype = getattr(torch, config.dtype)
+    """Build a vLLM engine and return (llm, tokenizer)."""
+    print(f"Loading model with vLLM: {config.model_name}")
 
-    # Try flash_attention_2 first (faster on Ampere+); fall back to sdpa for Blackwell
-    try:
-        model = AutoModelForCausalLM.from_pretrained(
-            config.model_name,
-            torch_dtype=dtype,
-            device_map="auto",
-            attn_implementation="flash_attention_2",
-        )
-        print("  Using flash_attention_2")
-    except Exception:
-        model = AutoModelForCausalLM.from_pretrained(
-            config.model_name,
-            torch_dtype=dtype,
-            device_map="auto",
-            attn_implementation="sdpa",
-        )
-        print("  Using sdpa (flash_attention_2 not available)")
-    model.eval()
+    llm = LLM(
+        model=config.model_name,
+        dtype=config.dtype,                 # "bfloat16" / "float16" / "float32"
+        gpu_memory_utilization=config.gpu_memory_utilization,
+        max_model_len=config.max_model_len,
+        trust_remote_code=True,
+        seed=config.seed,
+    )
 
-    tokenizer = AutoTokenizer.from_pretrained(config.model_name)
-    tokenizer.padding_side = "left"
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer = llm.get_tokenizer()
+    print(f"  vLLM engine ready  |  dtype: {config.dtype}  "
+          f"|  gpu_mem_util: {config.gpu_memory_utilization}  "
+          f"|  max_model_len: {config.max_model_len}")
+    return llm, tokenizer
 
-    device = next(model.parameters()).device
-    vram_used = torch.cuda.memory_allocated(device) / 1e9
-    vram_total = torch.cuda.get_device_properties(device).total_memory / 1e9
-    print(f"  Model on device: {device}  |  dtype: {dtype}")
-    print(f"  VRAM: {vram_used:.2f} GB used / {vram_total:.1f} GB total")
-    if vram_used > vram_total * 0.9:
-        raise RuntimeError(
-            f"Model uses {vram_used:.1f}/{vram_total:.1f} GB VRAM. "
-            "Try --dtype float16 or a smaller model."
+
+def _sampling_params(config: EvalConfig, n: int) -> SamplingParams:
+    if config.do_sample and config.temperature > 0:
+        return SamplingParams(
+            n=n,
+            temperature=config.temperature,
+            top_p=config.top_p,
+            max_tokens=config.max_new_tokens,
+            seed=config.seed,
         )
-    return model, tokenizer
+    # Greedy decoding
+    return SamplingParams(
+        n=1,
+        temperature=0.0,
+        max_tokens=config.max_new_tokens,
+    )
+
+
+def warmup(model) -> None:
+    """Trigger engine/kernel initialisation with a tiny request."""
+    model.generate(
+        ["warmup"],
+        SamplingParams(n=1, temperature=0.0, max_tokens=4),
+        use_tqdm=False,
+    )
 
 
 def generate_samples(
@@ -87,44 +95,10 @@ def generate_samples(
     """
     Generate config.num_samples completions for a single prompt.
 
-    Splits the request into sub-batches of config.sample_batch_size
-    (num_return_sequences per call) to keep VRAM usage bounded.
-    Returns a flat list of decoded strings (input tokens stripped).
+    vLLM batches all N samples internally via SamplingParams(n=N), so this is a
+    single engine call. Returns a flat list of decoded completion strings.
     """
-    inputs = tokenizer(
-        [prompt],
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=4096,
-    ).to(model.device)
-    input_len = inputs["input_ids"].shape[1]
-
-    gen_kwargs: dict = {
-        "max_new_tokens": config.max_new_tokens,
-        "pad_token_id":   tokenizer.pad_token_id,
-        "eos_token_id":   tokenizer.eos_token_id,
-    }
-    if config.do_sample and config.temperature > 0:
-        gen_kwargs["do_sample"]   = True
-        gen_kwargs["temperature"] = config.temperature
-    else:
-        gen_kwargs["do_sample"] = False
-
-    all_outputs: List[str] = []
-    remaining = config.num_samples
-
-    while remaining > 0:
-        n = min(config.sample_batch_size, remaining)
-        with torch.no_grad():
-            generated_ids = model.generate(
-                **inputs,
-                num_return_sequences=n,
-                **gen_kwargs,
-            )
-        new_ids = generated_ids[:, input_len:]
-        decoded = tokenizer.batch_decode(new_ids, skip_special_tokens=True)
-        all_outputs.extend(decoded)
-        remaining -= n
-
-    return all_outputs
+    sampling_params = _sampling_params(config, n=config.num_samples)
+    outputs = model.generate([prompt], sampling_params, use_tqdm=False)
+    # outputs is a list with one RequestOutput (one prompt); collect its n samples
+    return [completion.text for completion in outputs[0].outputs]
