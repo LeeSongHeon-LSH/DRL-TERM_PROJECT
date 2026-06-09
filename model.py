@@ -86,6 +86,13 @@ def warmup(model) -> None:
     )
 
 
+def generate_greedy(model, prompt: str, config: EvalConfig) -> str:
+    """Single greedy (temperature=0) decoding pass for exact pass@1 accuracy."""
+    params = SamplingParams(n=1, temperature=0.0, max_tokens=config.max_new_tokens)
+    outputs = model.generate([prompt], params, use_tqdm=False)
+    return outputs[0].outputs[0].text
+
+
 def generate_samples(
     model,
     tokenizer,
@@ -100,5 +107,4 @@ def generate_samples(
     """
     sampling_params = _sampling_params(config, n=config.num_samples)
     outputs = model.generate([prompt], sampling_params, use_tqdm=False)
-    # outputs is a list with one RequestOutput (one prompt); collect its n samples
     return [completion.text for completion in outputs[0].outputs]

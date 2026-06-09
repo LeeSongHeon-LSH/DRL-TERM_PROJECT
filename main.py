@@ -38,7 +38,7 @@ from evaluate import (
     save_results,
     score_results,
 )
-from model import build_chat_prompt, generate_samples, load_model_and_tokenizer, warmup
+from model import build_chat_prompt, generate_greedy, generate_samples, load_model_and_tokenizer, warmup
 
 
 def set_seed(seed: int):
@@ -69,21 +69,45 @@ def eval_year(
     tokenizer,
     config: EvalConfig,
 ) -> list[ProblemResult]:
-    """Generate pass@k samples for every problem in one year."""
-    print(f"\n[AIME {year}] {len(problems)} problems × {config.num_samples} samples each")
-    results: list[ProblemResult] = []
+    """Two-phase evaluation per year.
 
-    for problem in tqdm(problems, desc=f"AIME {year}", unit="problem"):
+    Phase 1 — greedy pass@1:
+        Each problem is decoded once with temperature=0.  Gives exact
+        single-attempt accuracy (no estimator bias).
+
+    Phase 2 — sampling pass@k:
+        Each problem is sampled config.num_samples times.  Used to
+        compute pass@1/8/64/256 via the unbiased estimator.
+    """
+    n = len(problems)
+    print(f"\n[AIME {year}] Phase 1/2 — greedy pass@1  ({n} problems)")
+
+    greedy_outputs: dict[str, str] = {}
+    for problem in tqdm(problems, desc=f"AIME {year} [greedy]", unit="problem"):
+        prompt = build_chat_prompt(problem.problem, tokenizer)
+        greedy_outputs[problem.problem_id] = generate_greedy(model, prompt, config)
+
+    print(f"\n[AIME {year}] Phase 2/2 — sampling pass@{config.num_samples}  ({n} problems)")
+
+    results: list[ProblemResult] = []
+    for problem in tqdm(problems, desc=f"AIME {year} [sample]", unit="problem"):
         prompt = build_chat_prompt(problem.problem, tokenizer)
         raw_outputs = generate_samples(model, tokenizer, prompt, config)
-        predicted = [extract_answer(o) for o in raw_outputs]
-        n_correct = sum(1 for p in predicted if p == problem.answer)
+        predicted   = [extract_answer(o) for o in raw_outputs]
+        n_correct   = sum(1 for p in predicted if p == problem.answer)
+
+        greedy_out  = greedy_outputs[problem.problem_id]
+        greedy_pred = extract_answer(greedy_out)
+
         results.append(ProblemResult(
             problem=problem,
             raw_outputs=raw_outputs,
             predicted_answers=predicted,
             n_correct=n_correct,
             n_samples=config.num_samples,
+            greedy_output=greedy_out,
+            greedy_predicted=greedy_pred,
+            greedy_correct=(greedy_pred == problem.answer),
         ))
 
     return results
@@ -93,11 +117,19 @@ def print_year_summary(year: int, metrics: dict, elapsed: float):
     print(f"\n{'='*60}")
     print(f"AIME {year} — Results  ({elapsed:.1f}s)")
     print(f"{'='*60}")
-    for k, v in sorted(metrics.items()):
+    # greedy first, then sampled, then totals
+    priority = ["greedy_pass@1", "sampled_pass@1", "pass@"]
+    def _sort_key(item):
+        k = item[0]
+        for i, p in enumerate(priority):
+            if p in k:
+                return (i, k)
+        return (len(priority), k)
+    for k, v in sorted(metrics.items(), key=_sort_key):
         if isinstance(v, float):
-            print(f"  {k:<40} {v:.1%}")
+            print(f"  {k:<44} {v:.1%}")
         else:
-            print(f"  {k:<40} {v}")
+            print(f"  {k:<44} {v}")
 
 
 def run_eval(config: EvalConfig):

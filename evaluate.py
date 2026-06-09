@@ -60,6 +60,10 @@ class ProblemResult:
     predicted_answers: List[Optional[int]]  # N extracted predictions
     n_correct: int                          # how many of the N are correct
     n_samples: int                          # N (= config.num_samples)
+    # greedy pass@1 fields (populated in two-phase eval)
+    greedy_output: Optional[str] = None
+    greedy_predicted: Optional[int] = None
+    greedy_correct: bool = False
 
     @property
     def year(self) -> int:           return self.problem.year
@@ -98,9 +102,10 @@ def _pass_at_k(n: int, c: int, k: int) -> float:
 
 def score_results(results: List[ProblemResult], config: EvalConfig) -> Dict:
     """Compute pass@k metrics, grouped by AIME competition split (I / II)."""
-    # Only report k values that are valid given num_samples
     valid_k = [k for k in config.pass_k_values if k <= config.num_samples]
     metrics: Dict = {}
+
+    has_greedy = any(r.greedy_output is not None for r in results)
 
     for comp in ["I", "II"]:
         comp_results = [r for r in results if r.competition == comp]
@@ -110,10 +115,18 @@ def score_results(results: List[ProblemResult], config: EvalConfig) -> Dict:
             metrics[f"pass@{k}/AIME_{comp}"] = (
                 sum(r.pass_at(k) for r in comp_results) / len(comp_results)
             )
+        if has_greedy:
+            metrics[f"greedy_pass@1/AIME_{comp}"] = (
+                sum(r.greedy_correct for r in comp_results) / len(comp_results)
+            )
 
     for k in valid_k:
         metrics[f"pass@{k}/overall"] = (
             sum(r.pass_at(k) for r in results) / len(results) if results else 0.0
+        )
+    if has_greedy:
+        metrics["greedy_pass@1/overall"] = (
+            sum(r.greedy_correct for r in results) / len(results) if results else 0.0
         )
 
     metrics["total_problems"]  = len(results)
@@ -167,30 +180,44 @@ def log_year_to_wandb(
     """
     wandb.log(metrics)
 
-    # Per-problem table
+    has_greedy = any(r.greedy_output is not None for r in results)
     pk_col = f"pass@{config.num_samples}"
-    table = wandb.Table(columns=[
+
+    # Per-problem table
+    columns = [
         "problem_id", "competition", "problem_number",
         "ground_truth", "n_correct", "n_samples",
-        "pass@1", pk_col, "best_predicted", "problem_snippet",
-    ])
+    ]
+    if has_greedy:
+        columns += ["greedy_pass@1", "greedy_predicted"]
+    columns += ["sampled_pass@1", pk_col, "best_predicted", "problem_snippet"]
+
+    table = wandb.Table(columns=columns)
     for r in results:
         best_pred = next(
             (p for p in r.predicted_answers if p == r.problem.answer),
             r.predicted_answers[0] if r.predicted_answers else None,
         )
-        table.add_data(
+        row = [
             r.problem.problem_id,
             r.competition,
             r.problem_number,
             r.problem.answer,
             r.n_correct,
             r.n_samples,
+        ]
+        if has_greedy:
+            row += [
+                float(r.greedy_correct),
+                r.greedy_predicted if r.greedy_predicted is not None else -1,
+            ]
+        row += [
             r.pass_at(1),
             r.pass_at(config.num_samples),
             best_pred if best_pred is not None else -1,
             r.problem.problem[:300] + ("..." if len(r.problem.problem) > 300 else ""),
-        )
+        ]
+        table.add_data(*row)
     wandb.log({f"results/{year}/per_problem": table})
 
     # Difficulty curve: pass@k by problem number
@@ -198,19 +225,29 @@ def log_year_to_wandb(
     for r in results:
         by_num.setdefault(r.problem_number, []).append(r)
 
-    num_table = wandb.Table(columns=["problem_number", "pass@1", pk_col])
+    curve_cols = ["problem_number"]
+    if has_greedy:
+        curve_cols.append("greedy_pass@1")
+    curve_cols += ["sampled_pass@1", pk_col]
+
+    num_table = wandb.Table(columns=curve_cols)
     for num in sorted(by_num):
         rs = by_num[num]
-        num_table.add_data(
-            num,
+        row = [num]
+        if has_greedy:
+            row.append(sum(r.greedy_correct for r in rs) / len(rs))
+        row += [
             sum(r.pass_at(1) for r in rs) / len(rs),
             sum(r.pass_at(config.num_samples) for r in rs) / len(rs),
-        )
+        ]
+        num_table.add_data(*row)
+
     wandb.log({
+        f"charts/{year}/pass_by_problem_number_table": num_table,
         f"charts/{year}/pass_by_problem_number": wandb.plot.bar(
             num_table, "problem_number", pk_col,
             title=f"AIME {year} — {pk_col} by Problem Number (1=easiest, 15=hardest)",
-        )
+        ),
     })
 
 
@@ -279,7 +316,10 @@ def save_results(
                 "ground_truth":      r.problem.answer,
                 "n_correct":         r.n_correct,
                 "n_samples":         r.n_samples,
-                "pass@1":            r.pass_at(1),
+                "greedy_correct":    r.greedy_correct,
+                "greedy_predicted":  r.greedy_predicted,
+                "greedy_pass@1":     float(r.greedy_correct),
+                "sampled_pass@1":    r.pass_at(1),
                 pk_key:              r.pass_at(config.num_samples),
                 "predicted_answers": [p if p is not None else -1 for p in r.predicted_answers],
                 "problem":           r.problem.problem,
