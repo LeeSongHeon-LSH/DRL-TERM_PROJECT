@@ -1,6 +1,10 @@
 """
-Generate a pass@k figure (styled after SimpleRLZoo Fig.10)
-for Qwen2.5-1.5B-Instruct on AIME 2023 / 2024 / 2025.
+Generate a combined pass@k figure for Qwen2.5-1.5B-Instruct
+on AIME 2023 + 2024 + 2025 (combined evaluation).
+
+Layout:
+  Left  — pass@k curve (sampled) + greedy pass@1 marker, combined across all years
+  Right — per-year bar chart comparing pass@256 and greedy pass@1
 
 Usage:
     python plot_results.py
@@ -13,66 +17,29 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import matplotlib.ticker as ticker
 
-YEARS = [2023, 2024, 2025]
-K_VALUES = [1, 8, 64, 256]
+K_VALUES = [1, 2, 4, 8, 16, 32, 64, 128, 256]
+YEARS    = [2023, 2024, 2025]
 
-# ── hardcoded data from wandb ──────────────────────────────────────────────────
+# ── Update these values after re-running with the combined evaluation ─────────
+# combined: pass@k values averaged across all 2023+2024+2025 problems
+# by_year : pass@256 and greedy_pass@1 per year (from wandb combined run)
 HARDCODED = {
-    2023: {
-        "overall": {
-            "pass@1": 0.053515624999999976,
-            "pass@8": 0.08279817120721059,
-            "pass@64": 0.16721986158379815,
-            "pass@256": 0.26666666666666666,
-        },
-        "AIME_I": {
-            "pass@1": 0.04973958333333329,
-            "pass@8": 0.08496207470670052,
-            "pass@64": 0.18750353485516696,
-            "pass@256": 0.3333333333333333,
-        },
-        "AIME_II": {
-            "pass@1": 0.057291666666666664,
-            "pass@8": 0.08063426770772066,
-            "pass@64": 0.1469361883124293,
-            "pass@256": 0.2,
-        },
+    "combined": {
+        # sampled pass@k (fill all K_VALUES after re-run; currently only 4 measured)
+        "pass@1":   0.030295,
+        "pass@8":   0.089473,
+        "pass@64":  0.234631,
+        "pass@256": 0.366667,
+        # greedy pass@1 — update after re-run
+        "greedy_pass@1": None,
     },
-    2024: {
-        "overall": {
-            "pass@1": 0.027864583333333293,
-            "pass@8": 0.12057864411555592,
-            "pass@64": 0.3060115578475281,
-            "pass@256": 0.4666666666666667,
-        },
-        "AIME_I": {
-            "pass@1": 0.0434895833333333,
-            "pass@8": 0.1636409827499138,
-            "pass@64": 0.3518196813628896,
-            "pass@256": 0.4666666666666667,
-        },
-        "AIME_II": {
-            "pass@1": 0.012239583333333288,
-            "pass@8": 0.07751630548119805,
-            "pass@64": 0.2602034343321666,
-            "pass@256": 0.4666666666666667,
-        },
-    },
-    2025: {
-        "overall": {
-            "pass@1": 0.009505208333333274,
-            "pass@8": 0.0650410010260333,
-            "pass@64": 0.23066172116212208,
-            "pass@256": 0.36666666666666664,
-        },
-        "AIME_I": {
-            "pass@1": 0.009505208333333274,
-            "pass@8": 0.0650410010260333,
-            "pass@64": 0.23066172116212208,
-            "pass@256": 0.36666666666666664,
-        },
+    "by_year": {
+        2023: {"pass@256": 0.26667, "greedy_pass@1": None},
+        2024: {"pass@256": 0.46667, "greedy_pass@1": None},
+        2025: {"pass@256": 0.36667, "greedy_pass@1": None},
     },
 }
 
@@ -84,96 +51,121 @@ def smooth_curve(ks, vals, n_interp=300):
     return 2 ** log_x, interp_y
 
 
-def get_avg_vals(year_data: dict) -> dict:
-    """Average AIME_I and AIME_II; fall back to AIME_I if AIME_II absent."""
-    if "AIME_II" in year_data:
-        avg = {}
-        for k in K_VALUES:
-            key = f"pass@{k}"
-            v_i  = year_data["AIME_I"].get(key)
-            v_ii = year_data["AIME_II"].get(key)
-            if v_i is not None and v_ii is not None:
-                avg[key] = (v_i + v_ii) / 2
-        return avg
-    return dict(year_data.get("AIME_I", year_data.get("overall", {})))
-
-
 def make_figure(data: dict, output: str) -> None:
-    years_with_data = sorted(y for y in YEARS if y in data)
-    n_cols = len(years_with_data)
+    combined = data.get("combined", {})
+    by_year  = data.get("by_year", {})
 
-    if n_cols == 0:
-        print("[error] No data available.", file=sys.stderr)
+    # Collect measured pass@k points
+    ks   = [k for k in K_VALUES if f"pass@{k}" in combined and combined[f"pass@{k}"] is not None]
+    vals = [combined[f"pass@{k}"] for k in ks]
+    greedy = combined.get("greedy_pass@1")
+
+    if not ks:
+        print("[error] No pass@k data in combined.", file=sys.stderr)
         sys.exit(1)
 
-    COLOR = "#2166ac"
-    fig, axes = plt.subplots(1, n_cols, figsize=(3.4 * n_cols, 3.2), sharey=True)
-    if n_cols == 1:
-        axes = [axes]
+    COLOR_SAMPLE = "#2166ac"
+    COLOR_GREEDY = "#d6604d"
 
-    global_max = 0.0
-    for year in years_with_data:
-        vals = list(get_avg_vals(data[year]).values())
-        if vals:
-            global_max = max(global_max, max(vals))
+    fig = plt.figure(figsize=(10, 4))
+    gs  = gridspec.GridSpec(1, 2, width_ratios=[2, 1], figure=fig, wspace=0.35)
+    ax_main = fig.add_subplot(gs[0])
+    ax_bar  = fig.add_subplot(gs[1])
 
-    for ax, year in zip(axes, years_with_data):
-        avg = get_avg_vals(data[year])
-        ks   = [k for k in K_VALUES if f"pass@{k}" in avg]
-        vals = [avg[f"pass@{k}"] for k in ks]
+    # ── Left panel: pass@k curve ──────────────────────────────────────────────
+    if len(ks) >= 3:
+        xs, ys = smooth_curve(ks, vals)
+        ax_main.plot(xs, ys, color=COLOR_SAMPLE, linewidth=1.8, alpha=0.9, zorder=3)
 
-        if len(ks) >= 3:
-            xs, ys = smooth_curve(ks, vals)
-            ax.plot(xs, ys, color=COLOR, linewidth=1.8, alpha=0.9, zorder=3)
+    ax_main.plot(ks, vals,
+                 color=COLOR_SAMPLE, linewidth=0,
+                 marker="o", markersize=5.5,
+                 markerfacecolor="white", markeredgewidth=1.6,
+                 markeredgecolor=COLOR_SAMPLE, zorder=5,
+                 label="sampled pass@$k$")
 
-        ax.plot(ks, vals, color=COLOR, linewidth=0,
-                marker="o", markersize=5,
-                markerfacecolor="white", markeredgewidth=1.5,
-                markeredgecolor=COLOR, zorder=4)
+    for k, v in zip(ks, vals):
+        ax_main.annotate(f"{v:.3f}", xy=(k, v),
+                         xytext=(0, 7), textcoords="offset points",
+                         ha="center", fontsize=6.5, color=COLOR_SAMPLE)
 
-        for k, v in zip(ks, vals):
-            ax.annotate(f"{v:.3f}", xy=(k, v),
-                        xytext=(0, 7), textcoords="offset points",
-                        ha="center", fontsize=7, color=COLOR)
+    # Greedy pass@1 marker (diamond, different colour)
+    if greedy is not None:
+        ax_main.plot(1, greedy,
+                     color=COLOR_GREEDY, linewidth=0,
+                     marker="D", markersize=6,
+                     markerfacecolor=COLOR_GREEDY, markeredgewidth=0,
+                     zorder=6, label="greedy pass@1")
+        ax_main.annotate(f"{greedy:.3f}", xy=(1, greedy),
+                         xytext=(0, -13), textcoords="offset points",
+                         ha="center", fontsize=6.5, color=COLOR_GREEDY)
 
-        # note for 2025 that AIME_II is absent
-        if "AIME_II" not in data[year]:
-            ax.text(0.97, 0.04, "※ AIME I only",
-                    transform=ax.transAxes, ha="right", va="bottom",
-                    fontsize=6.5, color="#888888", style="italic")
+    y_max = max(vals + ([greedy] if greedy is not None else [])) * 1.32
+    ax_main.set_xscale("log", base=2)
+    ax_main.set_xlim(0.7, 340)
+    ax_main.set_ylim(0.0, y_max)
+    ax_main.set_xticks(K_VALUES)
+    ax_main.get_xaxis().set_major_formatter(
+        ticker.FixedFormatter([str(k) for k in K_VALUES])
+    )
+    ax_main.tick_params(axis="x", labelsize=7.5, rotation=45)
+    ax_main.yaxis.set_major_formatter(ticker.FormatStrFormatter("%.2f"))
+    ax_main.tick_params(axis="y", labelsize=8.5)
+    ax_main.set_xlabel("Number of Samples $k$", fontsize=9)
+    ax_main.set_ylabel("pass@$k$", fontsize=9.5)
+    ax_main.set_title("Combined AIME 2023 + 2024 + 2025", fontsize=11, fontweight="bold", pad=6)
+    ax_main.legend(fontsize=8, framealpha=0.9, loc="upper left")
+    ax_main.grid(True, which="both", linestyle="--", linewidth=0.35, alpha=0.45)
+    ax_main.spines[["top", "right"]].set_visible(False)
 
-        ax.set_xscale("log", base=2)
-        ax.set_xlim(0.7, 340)
-        ax.set_ylim(0.0, global_max * 1.28)
+    # ── Right panel: per-year bar chart (pass@256 + greedy_pass@1) ────────────
+    years_present = [y for y in YEARS if y in by_year]
+    n_years = len(years_present)
 
-        ax.set_xticks([1, 8, 64, 256])
-        ax.get_xaxis().set_major_formatter(ticker.FixedFormatter(["1", "8", "64", "256"]))
-        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%.2f"))
-        ax.tick_params(axis="both", labelsize=8.5)
+    p256_vals   = [by_year[y].get("pass@256")      for y in years_present]
+    greedy_vals = [by_year[y].get("greedy_pass@1") for y in years_present]
 
-        ax.set_title(f"AIME {year}", fontsize=11, fontweight="bold", pad=6)
-        ax.set_xlabel("Number of Samples $k$", fontsize=8.5)
-        if ax is axes[0]:
-            ax.set_ylabel("pass@$k$", fontsize=9.5)
+    x      = np.arange(n_years)
+    width  = 0.35
+    bar_p256   = ax_bar.bar(x - width / 2, p256_vals,   width, color=COLOR_SAMPLE, alpha=0.85, label="pass@256")
+    bar_greedy = ax_bar.bar(x + width / 2,
+                            [v if v is not None else 0.0 for v in greedy_vals],
+                            width, color=COLOR_GREEDY, alpha=0.85, label="greedy pass@1",
+                            hatch="//" if any(v is None for v in greedy_vals) else "")
 
-        ax.grid(True, which="both", linestyle="--", linewidth=0.35, alpha=0.45)
-        ax.spines[["top", "right"]].set_visible(False)
+    # Annotate bars
+    for bar, v in zip(bar_p256, p256_vals):
+        if v is not None:
+            ax_bar.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.008,
+                        f"{v:.3f}", ha="center", va="bottom", fontsize=6.5, color=COLOR_SAMPLE)
 
-    legend_handles = [
-        plt.Line2D([0], [0], color=COLOR, linewidth=1.8,
-                   marker="o", markersize=5, markerfacecolor="white",
-                   markeredgewidth=1.5, markeredgecolor=COLOR,
-                   label="Qwen2.5-1.5B-Instruct"),
-    ]
-    fig.legend(handles=legend_handles, loc="upper center", ncol=1,
-               fontsize=9, framealpha=0.9, bbox_to_anchor=(0.5, 1.04))
+    for bar, v in zip(bar_greedy, greedy_vals):
+        label = f"{v:.3f}" if v is not None else "N/A"
+        ax_bar.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.008,
+                    label, ha="center", va="bottom", fontsize=6.5, color=COLOR_GREEDY)
+
+    if any(v is None for v in greedy_vals):
+        ax_bar.text(0.97, 0.97, "// = not yet measured",
+                    transform=ax_bar.transAxes, ha="right", va="top",
+                    fontsize=6, color="#888888", style="italic")
+
+    bar_max = max(v for v in p256_vals + [v or 0.0 for v in greedy_vals] if v is not None)
+    ax_bar.set_ylim(0.0, bar_max * 1.35)
+    ax_bar.set_xticks(x)
+    ax_bar.set_xticklabels([str(y) for y in years_present], fontsize=9)
+    ax_bar.yaxis.set_major_formatter(ticker.FormatStrFormatter("%.2f"))
+    ax_bar.tick_params(axis="y", labelsize=8)
+    ax_bar.set_xlabel("AIME Year", fontsize=9)
+    ax_bar.set_title("pass@256 vs greedy pass@1\nby Year", fontsize=9.5, fontweight="bold", pad=6)
+    ax_bar.legend(fontsize=7.5, framealpha=0.9)
+    ax_bar.grid(axis="y", linestyle="--", linewidth=0.35, alpha=0.45)
+    ax_bar.spines[["top", "right"]].set_visible(False)
 
     fig.suptitle(
-        "Figure: pass@k Results of Qwen2.5-1.5B-Instruct on AIME 2023 / 2024 / 2025",
-        fontsize=8, y=-0.04, style="italic",
+        "Figure: Qwen2.5-1.5B-Instruct — AIME 2023/2024/2025 Combined Evaluation",
+        fontsize=8.5, y=1.02, style="italic",
     )
 
-    plt.tight_layout(rect=[0, 0.02, 1, 1])
     fig.savefig(output, dpi=180, bbox_inches="tight")
     print(f"[done] saved → {output}")
 

@@ -180,17 +180,19 @@ def log_year_to_wandb(
     """
     wandb.log(metrics)
 
+    valid_k   = [k for k in config.pass_k_values if k <= config.num_samples]
     has_greedy = any(r.greedy_output is not None for r in results)
-    pk_col = f"pass@{config.num_samples}"
+    pk_col     = f"pass@{config.num_samples}"
 
-    # Per-problem table
+    # Per-problem table — one column per valid k value
     columns = [
         "problem_id", "competition", "problem_number",
         "ground_truth", "n_correct", "n_samples",
     ]
     if has_greedy:
         columns += ["greedy_pass@1", "greedy_predicted"]
-    columns += ["sampled_pass@1", pk_col, "best_predicted", "problem_snippet"]
+    columns += [f"pass@{k}" for k in valid_k]
+    columns += ["best_predicted", "problem_snippet"]
 
     table = wandb.Table(columns=columns)
     for r in results:
@@ -211,16 +213,15 @@ def log_year_to_wandb(
                 float(r.greedy_correct),
                 r.greedy_predicted if r.greedy_predicted is not None else -1,
             ]
+        row += [r.pass_at(k) for k in valid_k]
         row += [
-            r.pass_at(1),
-            r.pass_at(config.num_samples),
             best_pred if best_pred is not None else -1,
             r.problem.problem[:300] + ("..." if len(r.problem.problem) > 300 else ""),
         ]
         table.add_data(*row)
     wandb.log({f"results/{year}/per_problem": table})
 
-    # Difficulty curve: pass@k by problem number
+    # Difficulty curve: all pass@k values by problem number
     by_num: Dict[int, List[ProblemResult]] = {}
     for r in results:
         by_num.setdefault(r.problem_number, []).append(r)
@@ -228,18 +229,15 @@ def log_year_to_wandb(
     curve_cols = ["problem_number"]
     if has_greedy:
         curve_cols.append("greedy_pass@1")
-    curve_cols += ["sampled_pass@1", pk_col]
+    curve_cols += [f"pass@{k}" for k in valid_k]
 
     num_table = wandb.Table(columns=curve_cols)
     for num in sorted(by_num):
-        rs = by_num[num]
+        rs  = by_num[num]
         row = [num]
         if has_greedy:
             row.append(sum(r.greedy_correct for r in rs) / len(rs))
-        row += [
-            sum(r.pass_at(1) for r in rs) / len(rs),
-            sum(r.pass_at(config.num_samples) for r in rs) / len(rs),
-        ]
+        row += [sum(r.pass_at(k) for r in rs) / len(rs) for k in valid_k]
         num_table.add_data(*row)
 
     wandb.log({
@@ -304,7 +302,7 @@ def save_results(
     year: int,
 ):
     os.makedirs(config.output_dir, exist_ok=True)
-    pk_key = f"pass@{config.num_samples}"
+    valid_k = [k for k in config.pass_k_values if k <= config.num_samples]
     output = {
         "year":    year,
         "metrics": metrics,
@@ -319,8 +317,7 @@ def save_results(
                 "greedy_correct":    r.greedy_correct,
                 "greedy_predicted":  r.greedy_predicted,
                 "greedy_pass@1":     float(r.greedy_correct),
-                "sampled_pass@1":    r.pass_at(1),
-                pk_key:              r.pass_at(config.num_samples),
+                **{f"pass@{k}": r.pass_at(k) for k in valid_k},
                 "predicted_answers": [p if p is not None else -1 for p in r.predicted_answers],
                 "problem":           r.problem.problem,
                 "raw_outputs":       r.raw_outputs,
@@ -329,6 +326,139 @@ def save_results(
         ],
     }
     path = os.path.join(config.output_dir, f"aime_{year}_results.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(output, f, ensure_ascii=False, indent=2)
+    print(f"Results saved to {path}")
+
+
+# ---------------------------------------------------------------------------
+# Combined (multi-year) scoring, wandb logging, and JSON save
+# ---------------------------------------------------------------------------
+
+def score_combined(results: List[ProblemResult], config: EvalConfig) -> Dict:
+    """Compute pass@256 and greedy_pass@1 across all combined problems.
+
+    Also includes per-year breakdowns of both metrics.
+    """
+    n = len(results)
+    if n == 0:
+        return {}
+
+    num_samples = config.num_samples
+    metrics: Dict = {
+        f"pass@{num_samples}/combined": sum(r.pass_at(num_samples) for r in results) / n,
+        "greedy_pass@1/combined":       sum(r.greedy_correct for r in results) / n,
+        "total_problems":               n,
+        "total_samples":                sum(r.n_samples for r in results),
+        "total_n_correct":              sum(r.n_correct for r in results),
+    }
+
+    for year in sorted(set(r.year for r in results)):
+        yr = [r for r in results if r.year == year]
+        metrics[f"pass@{num_samples}/{year}"] = (
+            sum(r.pass_at(num_samples) for r in yr) / len(yr)
+        )
+        metrics[f"greedy_pass@1/{year}"] = (
+            sum(r.greedy_correct for r in yr) / len(yr)
+        )
+
+    return metrics
+
+
+def log_combined_to_wandb(
+    results: List[ProblemResult],
+    metrics: Dict,
+    config: EvalConfig,
+):
+    """Log combined results to the currently active wandb run.
+
+    Uploads:
+      - Scalar metrics (combined + per-year)
+      - Per-problem table (all years, year column included)
+      - Bar charts: pass@256 and greedy_pass@1 by year
+    """
+    wandb.log(metrics)
+
+    num_samples = config.num_samples
+    pk_col      = f"pass@{num_samples}"
+
+    # Per-problem table
+    columns = [
+        "year", "problem_id", "competition", "problem_number",
+        "ground_truth", "n_correct", "n_samples",
+        "greedy_pass@1", "greedy_predicted", pk_col, "problem_snippet",
+    ]
+    table = wandb.Table(columns=columns)
+    for r in results:
+        table.add_data(
+            r.year,
+            r.problem.problem_id,
+            r.competition,
+            r.problem_number,
+            r.problem.answer,
+            r.n_correct,
+            r.n_samples,
+            float(r.greedy_correct),
+            r.greedy_predicted if r.greedy_predicted is not None else -1,
+            r.pass_at(num_samples),
+            r.problem.problem[:300] + ("..." if len(r.problem.problem) > 300 else ""),
+        )
+    wandb.log({"combined/per_problem": table})
+
+    # Bar charts: both metrics by year
+    years = sorted(set(r.year for r in results))
+    year_table = wandb.Table(columns=["year", pk_col, "greedy_pass@1"])
+    for year in years:
+        year_table.add_data(
+            str(year),
+            metrics.get(f"{pk_col}/{year}", 0.0),
+            metrics.get(f"greedy_pass@1/{year}", 0.0),
+        )
+    wandb.log({"combined/by_year_summary": year_table})
+    wandb.log({
+        f"charts/{pk_col}_by_year": wandb.plot.bar(
+            year_table, "year", pk_col,
+            title=f"{pk_col} — AIME {'/'.join(str(y) for y in years)}",
+        ),
+        "charts/greedy_pass1_by_year": wandb.plot.bar(
+            year_table, "year", "greedy_pass@1",
+            title=f"greedy pass@1 — AIME {'/'.join(str(y) for y in years)}",
+        ),
+    })
+
+
+def save_combined_results(
+    results: List[ProblemResult],
+    metrics: Dict,
+    config: EvalConfig,
+):
+    os.makedirs(config.output_dir, exist_ok=True)
+    num_samples = config.num_samples
+    output = {
+        "years":   sorted(set(r.year for r in results)),
+        "metrics": metrics,
+        "results": [
+            {
+                "year":              r.year,
+                "problem_id":        r.problem.problem_id,
+                "competition":       r.competition,
+                "problem_number":    r.problem_number,
+                "ground_truth":      r.problem.answer,
+                "n_correct":         r.n_correct,
+                "n_samples":         r.n_samples,
+                "greedy_correct":    r.greedy_correct,
+                "greedy_predicted":  r.greedy_predicted,
+                "greedy_pass@1":     float(r.greedy_correct),
+                f"pass@{num_samples}": r.pass_at(num_samples),
+                "predicted_answers": [p if p is not None else -1 for p in r.predicted_answers],
+                "problem":           r.problem.problem,
+                "raw_outputs":       r.raw_outputs,
+            }
+            for r in results
+        ],
+    }
+    years_str = "_".join(str(y) for y in output["years"])
+    path = os.path.join(config.output_dir, f"aime_{years_str}_combined_results.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
     print(f"Results saved to {path}")

@@ -22,7 +22,7 @@ class EvalConfig:
     # pass@k
     num_samples: int = 256          # samples generated per problem (vLLM n=N in one call)
     sample_batch_size: int = 16     # (unused with vLLM; kept for CLI back-compat)
-    pass_k_values: List[int] = field(default_factory=lambda: [1, 8, 64, 256])
+    pass_k_values: List[int] = field(default_factory=lambda: [1, 2, 4, 8, 16, 32, 64, 128, 256])
 
     # Evaluation
     years: List[int] = field(default_factory=lambda: [2023, 2024, 2025])
@@ -56,7 +56,7 @@ def parse_args() -> EvalConfig:
     parser.add_argument("--sample-batch-size", type=int,   default=16,
                         help="num_return_sequences per model.generate() call")
     parser.add_argument("--pass-k-values",     type=int,   nargs="+",
-                        default=[1, 8, 64, 256],
+                        default=[1, 2, 4, 8, 16, 32, 64, 128, 256],
                         help="Which pass@k values to report (filtered to ≤ num_samples)")
     parser.add_argument("--years",             type=int,   nargs="+",
                         default=[2023, 2024, 2025])
