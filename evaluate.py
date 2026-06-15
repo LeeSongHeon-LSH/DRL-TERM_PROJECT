@@ -336,31 +336,31 @@ def save_results(
 # ---------------------------------------------------------------------------
 
 def score_combined(results: List[ProblemResult], config: EvalConfig) -> Dict:
-    """Compute pass@256 and greedy_pass@1 across all combined problems.
+    """Compute all pass@k values and greedy_pass@1 across all combined problems.
 
-    Also includes per-year breakdowns of both metrics.
+    Intermediate milestones (pass@1, pass@2, pass@4, ... up to pass@N) are all
+    reported, not just pass@N.  Per-year breakdowns are included for every k.
     """
     n = len(results)
     if n == 0:
         return {}
 
-    num_samples = config.num_samples
+    valid_k = [k for k in config.pass_k_values if k <= config.num_samples]
+
     metrics: Dict = {
-        f"pass@{num_samples}/combined": sum(r.pass_at(num_samples) for r in results) / n,
-        "greedy_pass@1/combined":       sum(r.greedy_correct for r in results) / n,
-        "total_problems":               n,
-        "total_samples":                sum(r.n_samples for r in results),
-        "total_n_correct":              sum(r.n_correct for r in results),
+        "greedy_pass@1/combined": sum(r.greedy_correct for r in results) / n,
+        "total_problems":         n,
+        "total_samples":          sum(r.n_samples for r in results),
+        "total_n_correct":        sum(r.n_correct for r in results),
     }
+    for k in valid_k:
+        metrics[f"pass@{k}/combined"] = sum(r.pass_at(k) for r in results) / n
 
     for year in sorted(set(r.year for r in results)):
         yr = [r for r in results if r.year == year]
-        metrics[f"pass@{num_samples}/{year}"] = (
-            sum(r.pass_at(num_samples) for r in yr) / len(yr)
-        )
-        metrics[f"greedy_pass@1/{year}"] = (
-            sum(r.greedy_correct for r in yr) / len(yr)
-        )
+        metrics[f"greedy_pass@1/{year}"] = sum(r.greedy_correct for r in yr) / len(yr)
+        for k in valid_k:
+            metrics[f"pass@{k}/{year}"] = sum(r.pass_at(k) for r in yr) / len(yr)
 
     return metrics
 
@@ -373,24 +373,24 @@ def log_combined_to_wandb(
     """Log combined results to the currently active wandb run.
 
     Uploads:
-      - Scalar metrics (combined + per-year)
-      - Per-problem table (all years, year column included)
-      - Bar charts: pass@256 and greedy_pass@1 by year
+      - Scalar metrics (combined + per-year) for every pass@k milestone
+      - Per-problem table with all pass@k columns
+      - Bar charts: each pass@k and greedy_pass@1 by year
     """
     wandb.log(metrics)
 
-    num_samples = config.num_samples
-    pk_col      = f"pass@{num_samples}"
+    valid_k    = [k for k in config.pass_k_values if k <= config.num_samples]
+    pk_max_col = f"pass@{config.num_samples}"
 
-    # Per-problem table
+    # Per-problem table — one column per milestone k
     columns = [
         "year", "problem_id", "competition", "problem_number",
         "ground_truth", "n_correct", "n_samples",
-        "greedy_pass@1", "greedy_predicted", pk_col, "problem_snippet",
-    ]
+        "greedy_pass@1", "greedy_predicted",
+    ] + [f"pass@{k}" for k in valid_k] + ["problem_snippet"]
     table = wandb.Table(columns=columns)
     for r in results:
-        table.add_data(
+        row = [
             r.year,
             r.problem.problem_id,
             r.competition,
@@ -400,26 +400,34 @@ def log_combined_to_wandb(
             r.n_samples,
             float(r.greedy_correct),
             r.greedy_predicted if r.greedy_predicted is not None else -1,
-            r.pass_at(num_samples),
-            r.problem.problem[:300] + ("..." if len(r.problem.problem) > 300 else ""),
-        )
+        ]
+        row += [r.pass_at(k) for k in valid_k]
+        row += [r.problem.problem[:300] + ("..." if len(r.problem.problem) > 300 else "")]
+        table.add_data(*row)
     wandb.log({"combined/per_problem": table})
 
-    # Bar charts: both metrics by year
+    # Per-year summary table with all milestones
     years = sorted(set(r.year for r in results))
-    year_table = wandb.Table(columns=["year", pk_col, "greedy_pass@1"])
+    year_cols  = ["year", "greedy_pass@1"] + [f"pass@{k}" for k in valid_k]
+    year_table = wandb.Table(columns=year_cols)
     for year in years:
-        year_table.add_data(
-            str(year),
-            metrics.get(f"{pk_col}/{year}", 0.0),
-            metrics.get(f"greedy_pass@1/{year}", 0.0),
-        )
+        row = [str(year), metrics.get(f"greedy_pass@1/{year}", 0.0)]
+        row += [metrics.get(f"pass@{k}/{year}", 0.0) for k in valid_k]
+        year_table.add_data(*row)
     wandb.log({"combined/by_year_summary": year_table})
+
+    # Bar chart for each pass@k milestone
+    for k in valid_k:
+        kt = wandb.Table(columns=["year", f"pass@{k}"])
+        for year in years:
+            kt.add_data(str(year), metrics.get(f"pass@{k}/{year}", 0.0))
+        wandb.log({
+            f"charts/pass@{k}_by_year": wandb.plot.bar(
+                kt, "year", f"pass@{k}",
+                title=f"pass@{k} — AIME {'/'.join(str(y) for y in years)}",
+            )
+        })
     wandb.log({
-        f"charts/{pk_col}_by_year": wandb.plot.bar(
-            year_table, "year", pk_col,
-            title=f"{pk_col} — AIME {'/'.join(str(y) for y in years)}",
-        ),
         "charts/greedy_pass1_by_year": wandb.plot.bar(
             year_table, "year", "greedy_pass@1",
             title=f"greedy pass@1 — AIME {'/'.join(str(y) for y in years)}",
@@ -433,7 +441,7 @@ def save_combined_results(
     config: EvalConfig,
 ):
     os.makedirs(config.output_dir, exist_ok=True)
-    num_samples = config.num_samples
+    valid_k = [k for k in config.pass_k_values if k <= config.num_samples]
     output = {
         "years":   sorted(set(r.year for r in results)),
         "metrics": metrics,
@@ -449,7 +457,7 @@ def save_combined_results(
                 "greedy_correct":    r.greedy_correct,
                 "greedy_predicted":  r.greedy_predicted,
                 "greedy_pass@1":     float(r.greedy_correct),
-                f"pass@{num_samples}": r.pass_at(num_samples),
+                **{f"pass@{k}": r.pass_at(k) for k in valid_k},
                 "predicted_answers": [p if p is not None else -1 for p in r.predicted_answers],
                 "problem":           r.problem.problem,
                 "raw_outputs":       r.raw_outputs,

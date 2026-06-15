@@ -18,6 +18,7 @@ Usage:
 
 import os
 import random
+import re
 import sys
 import time
 
@@ -110,11 +111,18 @@ def print_combined_summary(metrics: dict, elapsed: float):
     print(f"\n{'='*60}")
     print(f"Combined AIME Results  ({elapsed:.1f}s)")
     print(f"{'='*60}")
-    for k, v in sorted(metrics.items()):
+
+    def _sort_key(item):
+        k = item[0]
+        # extract numeric suffix for pass@N keys so they sort numerically
+        m = re.search(r"pass@(\d+)", k)
+        return (0 if m else 1, int(m.group(1)) if m else 0, k)
+
+    for k, v in sorted(metrics.items(), key=_sort_key):
         if isinstance(v, float):
-            print(f"  {k:<44} {v:.1%}")
+            print(f"  {k:<48} {v:.1%}")
         else:
-            print(f"  {k:<44} {v}")
+            print(f"  {k:<48} {v}")
 
 
 def run_eval(config: EvalConfig):
