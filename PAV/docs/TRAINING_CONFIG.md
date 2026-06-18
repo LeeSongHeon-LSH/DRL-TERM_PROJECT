@@ -1,6 +1,6 @@
 # 현재 학습 설정 (Training Configuration)
 
-> **마지막 업데이트**: 2026-05-29
+> **마지막 업데이트**: 2026-06-15
 > **브랜치**: `Implement`
 
 ---
@@ -10,8 +10,8 @@
 | 구성 요소 | 모델 | 양자화 | 위치 | 상태 |
 |-----------|------|--------|------|------|
 | **정책 π** | `Qwen/Qwen2.5-Math-1.5B-Instruct` | `bfloat16` (Full FT) | 학습 PC (3090) | ✅ 학습 중 |
-| **Prover μ** | `Qwen/Qwen2.5-Math-1.5B-Instruct` (frozen) | `bfloat16` | 추론 PC ×2 | ✅ 2대 online |
-| **PRM** | `Skywork/Skywork-o1-Open-PRM-Qwen-2.5-1.5B` | `int8` (bitsandbytes) | 추론 PC ×1 | ✅ 1대 online |
+| **Prover μ** | `Qwen/Qwen2.5-Math-1.5B-Instruct` (frozen) | `fp16` (T4) | cloud T4 ×2 | ✅ 2대 online |
+| **PRM** | `Skywork/Skywork-o1-Open-PRM-Qwen-2.5-1.5B` | `int8` (bitsandbytes) | cloud T4 ×1 | ✅ 1대 online |
 
 ---
 
@@ -28,6 +28,8 @@
 | **reward.lam** | `−0.5` | Q3 risk-seeking 계수 |
 | **reward.cvar_alpha** | `0.2` | Q4 CVaR tail (미사용) |
 
+> **Ablation (C2 스칼라)**: [`configs/rl_c2_scalar.yaml`](../configs/rl_c2_scalar.yaml) — PAV 추출(mc_rollout, K=16)은 C3와 100% 동일하게 두고 **reducer만 Q3 → Q1(mean)** 으로 바꾼 baseline. 분포 항(std)을 끄고 평균만 사용. 실행: [`scripts/run_c2_scalar.sh`](../scripts/run_c2_scalar.sh).
+
 ### 2.2 GRPO
 
 | 파라미터 | 값 | 설명 |
@@ -40,7 +42,7 @@
 | **warmup_steps** | `50` | LR warmup (1%) |
 | **gradient_accumulation** | `8` | gradient 누적 횟수 |
 | **optimizer** | `adamw_bnb_8bit` | 8-bit AdamW (VRAM 절반) |
-| **max_completion_length** | `512` | 최대 생성 길이 |
+| **max_completion_length** | **`256`** | 코드상 `vllm.max_new_tokens`로 구동 (rl_q3.yaml=256). `g.max_completion_length`(512)는 vllm 키 없을 때만 fallback |
 
 ### 2.3 배치 구성 (코드 적용값)
 
@@ -79,9 +81,9 @@
 
 | 서비스 | 프록시명 | 그룹 | 상태 | 트래픽 |
 |--------|----------|------|------|--------|
-| **μ 서버 #1** | `mu-5070-mu-01` | `mu_cluster` | 🟢 online | In: 25MB / Out: 153MB |
-| **μ 서버 #2** | `mu-5070-mu-02` | `mu_cluster` | 🟢 online | In: 28MB / Out: 169MB |
-| **PRM 서버** | `prm-5070-prm-01` | `prm_cluster` | 🟢 online | In: 525MB / Out: 22MB |
+| **μ 서버 #1** | `mu-t4-mu-01` | `mu_cluster` | 🟢 online | In: 25MB / Out: 153MB |
+| **μ 서버 #2** | `mu-t4-mu-02` | `mu_cluster` | 🟢 online | In: 28MB / Out: 169MB |
+| **PRM 서버** | `prm-t4-prm-01` | `prm_cluster` | 🟢 online | In: 525MB / Out: 22MB |
 
 ### 4.3 환경변수
 
@@ -98,7 +100,7 @@ MU_REPLICAS=2
 # 추론 PC (PAV/docker-compose.inference.yml)
 FRPS_ADDR=ksisem0811.duckdns.org
 FRPS_TOKEN=<동일 토큰>
-NODE_NAME=5070-mu-01  # 또는 5070-mu-02, 5070-prm-01
+NODE_NAME=t4-mu-01  # 또는 t4-mu-02, t4-prm-01
 ```
 
 ---
@@ -124,6 +126,9 @@ NODE_NAME=5070-mu-01  # 또는 5070-mu-02, 5070-prm-01
 | **학습 데이터** | GSM8K train |
 | **평가 데이터** | MathNet (English, text-only) |
 | **평가 subset** | 200문제 |
+| **프롬프트 포맷** | **few-shot 1-shot + 강제 step 포맷** ([`policy_data.py`](../src/train/policy_data.py) `_make_chat_wrapper`) |
+
+> 프롬프트는 system 규칙(자연어 step만, 줄당 `"Step k:"` 1개, 코드 금지, 마지막 줄 `"Answer: <number>"`) + 예시 1개(user/assistant) 를 정책 입력 앞에 붙인다. 이 변경으로 completion 길이/분산이 zero-shot 대비 줄어든다 (실험: `PAV-distribution-fewshot-test`).
 
 ---
 
@@ -131,10 +136,13 @@ NODE_NAME=5070-mu-01  # 또는 5070-mu-02, 5070-prm-01
 
 | 항목 | 설정 |
 |------|------|
-| **출력 폴더** | `./outputs/<wandb_run_name>_<MMdd_HHMM>/` |
-| **wandb_run_name** | `PAV-distribution-test` |
-| **로깅 간격** | 10 step |
-| **저장 간격** | 500 step |
+| **출력 폴더** | `./outputs/<wandb_run_name>/` (타임스탬프 suffix 없음 — [`grpo_trainer.py`](../src/train/grpo_trainer.py) `output_dir`) |
+| **wandb_run_name** | `PAV-distribution-fewshot-nomal-test` (rl_q3.yaml 현재값) |
+| **로깅 간격** | **1 step** (`log_every` → `logging_steps`) |
+| **저장 간격** | **100 step** (`eval_every` → `save_steps`) |
+| **dump_samples** | 10 step (`dump_samples_every`) |
+
+> **수행된 실험 run** (`outputs/`): `PAV-distribution-test`(Q3 zero-shot), `PAV-distribution-fewshot-test`(Q3 few-shot), `PAV-scalar-c2-test`(Q1 scalar). 3-run 학습변화량 비교 → [`outputs/comparison/training_comparison.md`](../outputs/comparison/training_comparison.md).
 | **Dashboard** | `http://<학습PC>:8501` |
 | **FRP Dashboard** | `http://<학습PC>:7500` (admin / `FRPS_DASHBOARD_PASSWORD`) |
 
@@ -152,9 +160,10 @@ NODE_NAME=5070-mu-01  # 또는 5070-mu-02, 5070-prm-01
 | PAV Reward | `src/train/reward_fn.py` |
 | Remote μ | `src/rollout/remote_mu.py` |
 | Remote PRM | `src/prm/remote_client.py` |
-| 학습 PC Compose | `docker-compose.yml` |
+| 학습 PC Compose (trainer + frps + frpc + dashboard) | `docker-compose.yml` |
 | 추론 PC Compose | `docker-compose.inference.yml` |
-| FRP 서버 Compose | `FRP/docker-compose.yml` |
+| FRP 설정 (toml) | `frp/frps.toml`, `frp/frpc.toml` |
+| C2 ablation 설정 / 실행 | `configs/rl_c2_scalar.yaml`, `scripts/run_c2_scalar.sh` |
 
 ---
 
@@ -168,7 +177,7 @@ FRPS_TOKEN=<token> FRPS_ADDR=ksisem0811.duckdns.org \
 
 # 추론 PC — μ/PRM 시작
 FRPS_ADDR=ksisem0811.duckdns.org FRPS_TOKEN=<token> \
-  NODE_NAME=5070-mu-01 docker compose -f docker-compose.inference.yml up -d
+  NODE_NAME=t4-mu-01 docker compose -f docker-compose.inference.yml up -d
 
 # 로그 확인
 docker logs -f pav-trainer

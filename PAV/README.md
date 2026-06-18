@@ -102,7 +102,7 @@ uv run python scripts/02_phase1_mc.py --ks 4 8 16 32
 # W3~W4 — GRPO 학습 (GSM8K) + MathNet 평가
 uv run python scripts/03_grpo_train.py --rl-config configs/rl_q3.yaml
 uv run python scripts/20_eval_mathnet.py \
-    --lora ./outputs/q3_lambda-0.5_K16/checkpoint-5000 --N 64
+    --lora ./outputs/PAV-distribution-fewshot-test/checkpoint-500 --N 64
 ```
 
 ## Docker로 띄우기 (단일 PC)
@@ -127,15 +127,15 @@ docker compose logs -f trainer
 
 ## 분산 셋업 (2 PC) — 학습 PC ↔ 추론 PC
 
-큰 모델(π/μ 7B)이나 Full FT를 24 GB GPU 한 장으로 못 돌릴 때 권장.
-**μ + PRM을 다른 PC로 분리**, π trainer만 단독 GPU 사용.
+π(Full FT)+μ+PRM을 24 GB GPU 한 장에 동시에 못 올릴 때(본 실험의 default).
+**μ + PRM을 추론 서버로 분리**, π trainer만 단독 GPU 사용. 본 실험은 보유 **3090(학습)** + 클라우드 **T4 ×N(추론)** 구성.
 
 ```
 ┌────────────────────────────┐         ┌────────────────────────────┐
-│ 학습 PC (3090)             │   LAN   │ 추론 PC (3090 Ti)          │
+│ 학습 PC — RTX 3090 (24GB)  │   HTTP  │ 추론 — cloud T4 (16GB) ×N  │
 │  docker-compose.yml        │ ◄────► │  docker-compose.inference  │
-│   └ trainer container      │         │   ├ μ vLLM server  :8001   │
-│                            │         │   └ PRM FastAPI    :8002   │
+│   └ trainer container      │  (로드  │   ├ μ vLLM server  :8001   │
+│                            │ 밸런서) │   └ PRM FastAPI    :8002   │
 └────────────────────────────┘         └────────────────────────────┘
 ```
 
@@ -196,12 +196,12 @@ mu:
 
 ### 분산 VRAM 예측 (1.5B Full FT default)
 
-| PC | 구성 | VRAM | 마진 (24 GB) |
+| PC | 구성 | VRAM | 마진 |
 |---|---|---:|---:|
-| **학습 PC (3090) ⭐** | **π 1.5B Full FT + 8bit Adam + vLLM colocate(0.20)** | **~17 GB** | **7 GB ✅** |
-| **추론 PC (3090 Ti) ⭐** | **μ 1.5B (gpu_mem=0.25) + PRM 1.5B int8** | **~8 GB** | **16 GB ✅** |
+| **학습 PC (3090 24GB) ⭐** | **π 1.5B Full FT + adamw_bnb_8bit + vLLM colocate(0.20)** | **~17 GB** | **7 GB ✅** |
+| **추론 cloud T4 (16GB) ⭐** | **μ 1.5B (fp16, gpu_mem=0.6) + PRM 1.5B int8** | **~8 GB** | **~8 GB ✅** |
 | 학습 PC (7B 옵션) | π 7B + 4bit QLoRA + LoRA + vLLM colocate(0.20) | ~13 GB | 11 GB ✅ |
-| 추론 PC (7B 옵션) | μ 7B (gpu_mem=0.65) + PRM 1.5B int8 | ~17 GB | 7 GB ✅ |
+| 추론 (7B 옵션, ≥24GB 필요) | μ 7B (gpu_mem=0.65) + PRM 1.5B int8 | ~17 GB | T4 16GB 초과 ⚠ |
 
 ### 네트워크 부하
 

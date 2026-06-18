@@ -17,7 +17,7 @@ PAV-RL 파이프라인의 **시스템 구조 (단일/분산) → 한 step 데이
 flowchart LR
     subgraph Host["단일 호스트: GPU 1대"]
         direction TB
-        TRAIN["GRPOTrainer (TRL)<br>π = Qwen2.5-Math-1.5B Full FT<br>(GaLore 8bit)"]
+        TRAIN["GRPOTrainer (TRL)<br>π = Qwen2.5-Math-1.5B Full FT<br>(adamw_bnb_8bit)"]
         VLLM["vLLM colocate rollout<br>gpu_mem_util=0.30"]
         REWARD["PAVRewardFn<br>(stats/sample buffer)"]
         PRM_LOC["PRM (local, int8)<br>Skywork-PRM 1.5B"]
@@ -53,7 +53,7 @@ flowchart LR
 flowchart LR
     subgraph TrainPC["학습 PC (3090, 24 GB)"]
         direction TB
-        TRAIN["GRPOTrainer (TRL)<br>π Qwen2.5-Math-1.5B Full FT (default)<br>+ GaLore 8bit + vLLM colocate(0.30)"]
+        TRAIN["GRPOTrainer (TRL)<br>π Qwen2.5-Math-1.5B Full FT (default)<br>+ adamw_bnb_8bit + vLLM colocate(0.30)"]
         REWARD["PAVRewardFn"]
         RPRM["RemotePRM (httpx)"]
         RMU["RemoteMuSampler (httpx, OpenAI API)"]
@@ -62,7 +62,7 @@ flowchart LR
         REWARD --- RMU
     end
 
-    subgraph InfPC["추론 PC (3090 Ti, 24 GB)"]
+    subgraph InfPC["추론 (cloud T4, 16 GB)"]
         direction TB
         MUS["μ vLLM server<br>(stock OpenAI API, port 8001)<br>Qwen2.5-Math-1.5B frozen base"]
         PRMS["PRM FastAPI server<br>(scripts/serve_prm_http.py, port 8002)<br>Skywork PRM 1.5B int8"]
@@ -91,7 +91,7 @@ flowchart LR
 ```mermaid
 flowchart TB
     Q["GSM8K 문제 q"]:::data
-    Q --> PI["π (LoRA/QLoRA) — vLLM colocate<br>group_size=8 trajectory 생성"]:::main
+    Q --> PI["π (Full FT default) — vLLM colocate<br>group_size=8 trajectory 생성"]:::main
 
     PI --> SPLIT["split_steps<br>trajectory를 step 단위로 분할"]:::main
     SPLIT --> LOOP{"각 step h = 1..H<br>prefix s_h, action a_h"}:::main
@@ -334,29 +334,29 @@ flowchart LR
 | 디스크 | 100GB | 500GB SSD | 1TB NVMe |
 | Shared mem | 8GB (`shm_size: 8g`) | — | — |
 
-### 6.2 2 PC 분산 (3090 + 3090 Ti) ⭐ 권장 — 현재 default
+### 6.2 2 PC 분산 (3090 학습 + cloud T4 추론) ⭐ 권장 — 현재 default
 
 **학습 PC (3090 24GB)**
 
 | 시나리오 | VRAM | 마진 |
 |---|---:|---:|
-| **π 1.5B Full FT + GaLore 8bit + vLLM colocate(0.30)** ⭐ default | **~17 GB** | **7 GB ✅** |
+| **π 1.5B Full FT + adamw_bnb_8bit + vLLM colocate(0.30)** ⭐ default | **~17 GB** | **7 GB ✅** |
 | π 7B + 4bit QLoRA + LoRA + vLLM colocate(0.30) | ~13 GB | 11 GB ✅ |
 | π 7B + LoRA (bf16) + vLLM colocate(0.30) | ~22 GB | 2 GB ⚠ |
 
-**추론 PC (3090 Ti 24GB)**
+**추론 (cloud T4 16GB · Turing → fp16)**
 
 | 항목 (default — 1.5B μ) | VRAM |
 |---|---:|
-| **μ 1.5B vLLM (bf16, `gpu_mem`=0.25)** ⭐ | **~6 GB** |
+| **μ 1.5B vLLM (fp16, `gpu_mem`=0.6)** ⭐ | **~6 GB** |
 | **PRM Skywork 1.5B (int8 via bnb)** | **~1.7 GB** |
-| **합계** | **~8 GB** ✅ 마진 16 GB (매우 안전) |
+| **합계** | **~8 GB** ✅ 마진 ~8 GB (T4 16GB) |
 
-| 항목 (7B μ 옵션) | VRAM |
+| 항목 (7B μ 옵션 — T4 불가) | VRAM |
 |---|---:|
-| μ 7B vLLM (bf16, `gpu_mem`=0.65) | ~15.6 GB |
+| μ 7B vLLM (fp16) | ~15.6 GB |
 | PRM Skywork 1.5B (int8) | ~1.7 GB |
-| 합계 | ~17 GB ✅ 마진 7 GB |
+| 합계 | ~17 GB — T4 16GB 초과 → ≥24GB 추론 GPU 필요 |
 
 ### 6.3 네트워크 부하 (분산 모드)
 
@@ -381,7 +381,7 @@ flowchart LR
 |---|---|
 | π 1.5B base (bf16) | ~3.1 GB |
 | gradients (bf16) | ~3.1 GB |
-| GaLore 8bit states | ~3.1 GB |
+| 8bit Adam states (adamw_bnb_8bit) | ~3.1 GB |
 | activations (grad-ckpt, group=8) | ~2–3 GB |
 | vLLM colocate (`gpu_mem_util=0.30`) | ~4.8 GB |
 | PRM 1.5B (int8) | ~1.7 GB |
@@ -393,7 +393,7 @@ flowchart LR
 **옵션 B. Phase 0 (μ 불필요, 1.5B Full FT)**
 | 항목 | 메모리 |
 |---|---|
-| π 1.5B + GaLore 8bit + grads | ~9.3 GB |
+| π 1.5B + adamw_bnb_8bit + grads | ~9.3 GB |
 | activations | ~2–3 GB |
 | vLLM colocate (0.20) | ~4.8 GB |
 | PRM 1.5B (int8) | ~1.7 GB |
@@ -409,19 +409,19 @@ flowchart LR
 | μ 7B (bf16) | ~15 GB |
 | **합계** | **~37 GB** — A100/A6000+ |
 
-**옵션 D ⭐ (분산 default). 1.5B Full FT — 24GB 카드 2장**
-| 학습 PC (3090) | 추론 PC (3090 Ti) |
+**옵션 D ⭐ (분산 default). 1.5B Full FT — 3090(학습) + cloud T4(추론)**
+| 학습 PC (3090 24GB) | 추론 (cloud T4 16GB) |
 |---|---|
-| π 1.5B Full FT + GaLore 8bit + vLLM(0.20) ~17 GB | μ 1.5B vLLM(0.25) ~6 GB |
+| π 1.5B Full FT + adamw_bnb_8bit + vLLM(0.20) ~17 GB | μ 1.5B vLLM(fp16) ~6 GB |
 | | PRM 1.5B int8 ~1.7 GB |
-| **마진 7 GB ✅** | **마진 16 GB ✅ (매우 안전)** |
+| **마진 7 GB ✅** | **마진 ~8 GB ✅** |
 
-**옵션 E. 7B로 확장 — 분산 카드 2장**
-| 학습 PC (3090) | 추론 PC (3090 Ti) |
+**옵션 E. 7B로 확장 — 추론은 ≥24GB GPU 필요 (T4 16GB 불가)**
+| 학습 PC (3090) | 추론 (≥24GB, 예: 3090 Ti/A10) |
 |---|---|
 | π 7B QLoRA + LoRA + vLLM(0.20) ~13 GB | μ 7B vLLM(0.65) ~15.6 GB |
 | | PRM 1.5B int8 ~1.7 GB |
-| **마진 11 GB ✅** | **마진 7 GB ✅** |
+| **마진 11 GB ✅** | μ 7B+PRM ~17.3GB → T4 16GB 초과 |
 
 > 24GB GPU에서 안전 마진은 ~2GB. group_size를 8 → 16으로 늘리거나 `max_completion_length`를 1024로 키우면 OOM 위험.
 

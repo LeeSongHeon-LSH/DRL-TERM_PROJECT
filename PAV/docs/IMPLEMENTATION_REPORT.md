@@ -1,6 +1,6 @@
 # 구현 보고서 — PAV-RL (Phase 0 + Phase 1)
 
-작성일: 2026-05-10 (분산 셋업 갱신: 2026-05-20)
+작성일: 2026-05-10 (분산 셋업 갱신: 2026-05-20 · 구현 대조 갱신: 2026-06-15)
 대상 계획서: [구현 계획 — 차분 PAV + 분포형 보상 (Phase 0) 4dc18b40f5ed47259166ff0f0c0f8086.md](구현%20계획%20—%20차분%20PAV%20+%20분포형%20보상%20(Phase%200)%204dc18b40f5ed47259166ff0f0c0f8086.md)
 
 ---
@@ -20,18 +20,19 @@
 - **분산 옵션 (HTTP transport)** — μ + PRM을 다른 PC로 분리. trainer는 단일 24 GB GPU에서도
   1.5B Full FT (default) 또는 7B QLoRA 가능. weight broadcast 0, RPC 부하 ~6 MB/step (100 Mbps도 충분).
 - **PRM 8-bit 양자화** — bitsandbytes LLM.int8()로 Skywork 1.5B를 ~1.7 GB로 압축.
-- **현재 default: π/μ = Qwen2.5-Math-1.5B-Instruct + Full FT** (`full_ft: true`, `optim: galore_adamw_8bit_layerwise`).
-  7B + QLoRA로 확장은 yaml 키 변경만으로 가능.
+- **현재 default: π/μ = Qwen2.5-Math-1.5B-Instruct + Full FT** (`full_ft: true`, `optim: adamw_bnb_8bit`, `lr=2e-6`, `group_size=8`).
+  7B + QLoRA로 확장은 yaml 키 변경만으로 가능. (GaLore layerwise는 단일 PC swap 경로 `rl_q3_swap.yaml`에서 유지.)
 - **Optimizer 검증 결과** (1.5B Full FT, 24GB GPU):
   - ❌ `paged_adamw_8bit`: step scratch dequantize 12GB → OOM
   - ❌ `CAME`: factored variance + confidence guidance가 RAM 96% 폭주, step 0/50 hang
   - ✅ `adafactor`: factored variance, state ~1.5GB, 50 step 596초 완주 (Phase 0)
-  - ✅ `galore_adamw_8bit_layerwise` ⭐: gradient low-rank projection + 8bit + layer 단위, 50 step 553초 (Phase 0). 권장
+  - ✅ `galore_adamw_8bit_layerwise`: gradient low-rank projection + 8bit + layer 단위, 50 step 553초 (Phase 0).
+  - ⭐ **현재 메인 경로(`rl_q3.yaml`) default = `adamw_bnb_8bit`** (8-bit AdamW). GaLore layerwise는 단일 PC swap(`rl_q3_swap.yaml`)에서만 사용 — main 학습에서 grad_norm이 0으로 reporting되는 GaLore artifact 회피.
 - **분산 최적화**:
   - `_adapt_reward_for_trl`는 **직렬 처리** (ThreadPoolExecutor 2/4 동시 시도 → 추론 PC vLLM이 concurrent K=16 batch generation 못 견디고 `RemoteProtocolError: Server disconnected`, 직렬이 안정).
   - HTTP timeout: μ 600s / PRM 300s (K=16 batch 안정성).
   - PRM/μ HTTP 무한 retry (exponential backoff 2s→30s cap) — 추론 PC vLLM 일시 hang 회복.
-  - 추론 PC `MU_GPU_MEM=0.6` (14.4GB) — KV cache 여유로 n=16 batch generation 안정.
+  - 추론(cloud T4 16GB) `MU_GPU_MEM=0.6` (~9.6GB) — KV cache 여유로 n=16 batch generation 안정.
   - 학습 PC `vllm.gpu_memory_utilization=0.30` (7.2GB) — π colocate rollout.
 - **단일 PC Swap Pipeline** (24GB GPU 1대만 있을 때, [src/swap/](../src/swap/)):
   - π vLLM colocate (sleep mode level 1) + PRM/μ를 GPU↔CPU dynamic swap.
@@ -70,12 +71,17 @@ PAV/
 ├── .env.example / .env.inference.example
 ├── docs/
 │   ├── IMPLEMENTATION_REPORT.md       # ← 본 문서
+│   ├── QUICKSTART.md                  # 2 PC 분산 / 단일 PC swap 실행 가이드
+│   ├── TRAINING_CONFIG.md             # 현재 학습 설정 스냅샷
 │   ├── TRAINING_FLOW.md
 │   └── 구현 계획 — 차분 PAV + 분포형 보상 (Phase 0) ….md
 ├── configs/
 │   ├── prm.yaml                   # Skywork PRM 1.5B int8 (mode: local|remote)
+│   ├── prm_blackwell.yaml         # Blackwell(RTX 50-series) PRM 설정 (옵션 — 본 실험은 cloud T4)
 │   ├── policy.yaml                # Qwen2.5-Math-1.5B + Full FT (default) | LoRA/QLoRA, μ.mode 3가지
-│   └── rl_q3.yaml                 # 메인 RL 조건 (Q3, λ=-0.5, K=16, optim=paged_adamw_8bit, lr=5e-7)
+│   ├── rl_q3.yaml                 # 메인 RL 조건 (Q3, λ=-0.5, K=16, optim=adamw_bnb_8bit, lr=2e-6, group=8)
+│   ├── rl_c2_scalar.yaml          # C2 ablation — reducer만 Q1(mean)으로 (분포 off)
+│   └── rl_q3_swap.yaml            # 단일 PC swap 모드 (galore_adamw_8bit_layerwise, group=4)
 ├── src/
 │   ├── prm/
 │   │   ├── loader.py              # PRMConfig + load_prm (local|remote 분기)
@@ -97,7 +103,13 @@ PAV/
 │   │   ├── reward_fn.py           # PAVRewardFn + stats/sample buffer
 │   │   ├── policy_data.py         # build_policy / build_train_dataset
 │   │   ├── grpo_trainer.py        # build_grpo_trainer (TRL GRPOTrainer + optim 키)
-│   │   └── callbacks.py           # PAVMonitorCallback (W&B + dump)
+│   │   └── callbacks.py           # PAVMonitorCallback + JsonlMetricsCallback (W&B + dump)
+│   ├── swap/                      # 단일 PC swap pipeline (π/PRM/μ GPU↔CPU dynamic swap)
+│   │   ├── orchestrator.py        # SwapOrchestrator — 모델 swap 관리
+│   │   ├── swap_prm.py            # PRM CPU/GPU swap wrapper
+│   │   ├── swap_mu.py             # μ HF model wrapper (vLLM 안 씀)
+│   │   ├── reward_fn.py           # swap-aware reward function
+│   │   └── trainer.py             # build_grpo_trainer_swap (vLLM sleep mode)
 │   └── eval/
 │       ├── sanity.py              # S1~S4 자동 검증
 │       └── bon_pav.py             # BoN-PAV vs BoN-PRM
@@ -107,9 +119,14 @@ PAV/
 │   ├── 01_phase0_diff.py          # Phase 0 + S1~S4
 │   ├── 02_phase1_mc.py            # Phase 1 K 비교
 │   ├── 03_grpo_train.py           # GRPO+LoRA/QLoRA/FullFT 학습 entry
+│   ├── 03_grpo_train_swap.py      # 단일 PC swap pipeline entry
+│   ├── run_c2_scalar.sh           # C2 ablation 런처 (rl_c2_scalar.yaml)
 │   ├── 10_label_steps.py          # MATH-500 → sanity 라벨 jsonl
 │   ├── 20_eval_mathnet.py         # MathNet pass@1/N 평가
-│   └── serve_prm_http.py          # ★ PRM HTTP 서버 (FastAPI + uvicorn)
+│   ├── serve_prm_http.py          # ★ PRM HTTP 서버 (FastAPI + uvicorn)
+│   ├── dashboard.py               # Streamlit 실시간 학습 대시보드
+│   ├── plot_metrics.py            # metrics.jsonl → PNG 그래프 (단일 run)
+│   └── plot_compare3.py           # 다중 run 비교 플롯
 └── tests/
     ├── test_pav_swap.py           # Protocol/reducer/swap 동작
     ├── test_parser.py             # split_steps 회귀
@@ -168,7 +185,7 @@ TRL ≥0.13의 실제 시그니처에 맞춤:
 GRPOConfig(
     use_vllm=True, vllm_mode="colocate",         # 0.13+ 표준
     num_generations=8, beta=0.04, epsilon=0.2,    # group, KL, clip
-    max_completion_length=512,
+    max_completion_length=256,                    # rl_cfg.vllm.max_new_tokens로 override (없으면 512)
     ...
 )
 GRPOTrainer(
@@ -411,7 +428,7 @@ HF 캐시는 호스트 bind mount로 영속화.
 6. `scripts/03_grpo_train.py --rl-config configs/rl_q3.yaml` → GSM8K로 GRPO 학습.
 7. `scripts/20_eval_mathnet.py --lora ./outputs/.../checkpoint-N --N 64` → MathNet pass@1 / pass@N → **G2 / G3**.
 
-### 2 PC 분산 (3090 학습 + 3090 Ti 추론)
+### 2 PC 분산 (3090 학습 + cloud T4 추론)
 
 상세 quickstart + 트러블슈팅 → **[QUICKSTART.md](QUICKSTART.md)**.
 
