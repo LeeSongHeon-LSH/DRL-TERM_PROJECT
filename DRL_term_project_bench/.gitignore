@@ -1,0 +1,80 @@
+# === Large model checkpoint / result directories ===
+PAV-distribution-fewshot-test/
+PAV-distribution-test/
+PAV-distribution-test-1/
+PAV-scalar-c2-test/
+
+# === Large zip / part files ===
+*.zip
+*.zip*.part
+*.part
+
+# === Large CSV data files ===
+distribution_KL.csv
+distribution_reward.csv
+scalar_KL.csv
+scalar_reward.csv
+PAV-distribution-fewshot-test.csv
+PAV-scalar-c2-test.csv
+
+# === Benchmark run outputs (images, analysis md, pptx, npy, logs, jsonl) ===
+runs/
+runs/pav-checkpoint-500/
+runs/pav-checkpoint-500-rerun/
+runs/pav-scalar-c2-checkpoint-500/
+runs/pav-scalar-c2-checkpoint-500-rerun/
+runs/pav-fewshot-ckpt500-aime2024/
+runs/pav-fewshot-ckpt500-aime3/
+runs/pav-fewshot-ckpt500-all/
+runs/pav-fewshot-ckpt500-all-fewshot/
+runs/qwen-math-1.5b-baseline/
+runs/qwen-math-1.5b-baseline-rerun/
+runs/trained_full/
+runs/comparison_full/
+
+# === Benchmark result files (images, analysis md, pptx, npy, logs, jsonl) ===
+runs/*.png
+runs/*.pptx
+runs/*.md
+runs/comparison_test
+runs/rerun_logs/
+runs/resample_analysis/
+runs/test/
+runs/test2/
+runs/test3/
+runs/test_aime2024/
+runs/test_qwen_math/
+runs/test_vllm/
+
+# === Wandb logs ===
+wandb/
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# === Virtual environments ===
+.venv/
+venv/
+env/
+
+# === IDE / OS ===
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# === Jupyter ===
+.ipynb_checkpoints/
+
+# === Misc large / temp files ===
+1bRCFQtH9cPybDjVgSzc292WQZb1mi4YO
+*.npy
+*.jsonl
+*.log
