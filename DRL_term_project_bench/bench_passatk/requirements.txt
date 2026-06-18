@@ -1,0 +1,18 @@
+# Core dependencies
+torch>=2.0.0
+transformers>=4.36.0
+vllm>=0.3.0
+datasets>=2.14.0
+numpy>=1.24.0
+scipy>=1.10.0
+sympy>=1.12
+tqdm>=4.65.0
+pyyaml>=6.0
+
+# Optional but recommended
+math-verify>=0.1.0  # For better answer comparison (optional)
+wandb>=0.15.0  # For experiment tracking (optional)
+
+# Development dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
