@@ -1,0 +1,65 @@
+# PRM-Scalar 베이스라인 (C2)
+# 정의: PAV advantage 계산은 분포형(C3, mc_rollout+Q3)과 100% 동일하게 두고,
+#       reducer만 분포(Q3: mean−λ·std) 대신 스칼라(Q1: mean)로 바꾼 ablation.
+# 즉 분포를 끄고 평균 하나로 접는 버전.
+#
+# 기존 rl_q3.yaml과의 차이점:
+#   - reward.mode: Q3 → Q1 (유일한 변경)
+#   - 나머지 모든 하이퍼파라미터(pav.K, reward.alpha 등)는 C3와 동일
+algorithm: grpo
+
+defaults:
+  prm: prm.yaml
+  policy: policy.yaml
+
+# PAV 추출 — C3와 동일하게 mc_rollout 유지 (절대 differential로 바꾸지 말 것)
+pav:
+  method: mc_rollout        # Phase 1 — μ로 K개 alternative rollout, counterfactual advantage
+  K: 16                     # MC rollout 수 (mc_rollout 전용)
+
+# Reward 가공 — Q1: mean (분포 std 항 제거, 스칼라 접기)
+reward:
+  alpha: 3.0                # PAV 가중치 (C3와 동일)
+  mode: Q1                  # C3: Q3 → C2: Q1 (분포 끄기, 평균만 사용)
+  lam: -0.5                 # Q3용 λ — Q1에선 무시됨 (남겨둬도 무방)
+  cvar_alpha: 0.2           # Q4용 — Q1에선 무시됨
+
+# GRPO — C3와 동일
+grpo:
+  group_size: 8
+  kl_beta: 0.04
+  clip_eps: 0.2
+  learning_rate: 2.0e-6
+  total_steps: 5000
+  warmup_steps: 50
+  gradient_accumulation: 8
+  optim: adamw_bnb_8bit
+
+# 데이터 — C3와 동일
+data:
+  train:
+    - dataset: gsm8k
+      split: train
+  eval:
+    - dataset: mathnet
+      split: train
+      filters:
+        language: English
+        text_only: true
+        require_final_answer: true
+      subset: 200
+
+# vLLM rollout — C3와 동일
+vllm:
+  enable_prefix_caching: true
+  colocate: true
+  gpu_memory_utilization: 0.30
+  max_new_tokens: 256
+
+# 로깅 — C3 결과와 구분
+logging:
+  wandb_project:
+  wandb_run_name: PAV-scalar-c2-test
+  log_every: 1
+  eval_every: 100
+  dump_samples_every: 10

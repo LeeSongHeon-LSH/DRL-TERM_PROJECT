@@ -63,7 +63,7 @@ vllm:
 # 로깅
 logging:
   wandb_project:               # 빈 값 → wandb 비활성, stdout만
-  wandb_run_name: PAV-distribution-test
+  wandb_run_name: PAV-distribution-fewshot-nomal-test
   log_every: 1                # 매 step metrics 기록 (dashboard/jsonl 세밀하게)
   eval_every: 100             # 500→100: CUDA unknown error로 step 224에서 죽었던 사례 — 더 자주 체크포인트 저장 (resume 가능)
   dump_samples_every: 10    # trivial-step 함정 모니터링 — 10 step마다 samples.jsonl 기록

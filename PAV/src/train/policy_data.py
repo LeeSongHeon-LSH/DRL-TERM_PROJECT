@@ -255,8 +255,35 @@ def _extract_boxed(s: str) -> str | None:
 def _make_chat_wrapper(tokenizer):
     def _wrap(ex):
         msg = [
-            {"role": "system",
-             "content": "You solve math step by step. Number each step on its own line."},
+            {
+                "role": "system",
+                "content": (
+                    "You solve math problems using natural-language steps only.\n"
+                    "Rules:\n"
+                    '- Output exactly one reasoning step per line.\n'
+                    '- Start every line with "Step k:" (k = 1,2,3,...).\n'
+                    '- Each line must contain a SINGLE calculation or deduction. '
+                    "Never put two on one line.\n"
+                    '- Do NOT write any code or use Python.\n'
+                    '- Do NOT write an introduction or a summary sentence.\n'
+                    '- The last line must be "Answer: <number>".'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "A box has 2 dozen pens. 5 are given away. How many remain?"
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "Step 1: One dozen is 12, so 2 dozen is 2 × 12 = 24 pens.\n"
+                    "Step 2: 5 pens are given away.\n"
+                    "Step 3: Remaining pens = 24 − 5 = 19.\n"
+                    "Answer: 19"
+                ),
+            },
             {"role": "user", "content": ex["prompt"]},
         ]
         ex["prompt"] = tokenizer.apply_chat_template(

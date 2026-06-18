@@ -58,6 +58,8 @@ services:
       FRPS_DASHBOARD_URL: ${FRPS_DASHBOARD_URL:-http://frps:7500}
       FRPS_DASHBOARD_USER: ${FRPS_DASHBOARD_USER:-admin}
       FRPS_DASHBOARD_PASSWORD: ${FRPS_DASHBOARD_PASSWORD:-changeme}
+      # RL config 선택 — 기본 C3, C2 실행 시 RL_CONFIG=configs/rl_c2_scalar.yaml 로 오버라이드
+      RL_CONFIG: ${RL_CONFIG:-configs/rl_q3.yaml}
     volumes:
       - ${HF_HOME_HOST:-./.hf_cache}:/cache/huggingface
       - ./outputs:/app/outputs
@@ -66,7 +68,7 @@ services:
       - ./scripts:/app/scripts:ro
     command: >
       python scripts/03_grpo_train.py
-      --rl-config configs/rl_q3.yaml
+      --rl-config ${RL_CONFIG:-configs/rl_q3.yaml}
       --prm-config configs/prm.yaml
       --policy-config configs/policy.yaml
     shm_size: "8g"

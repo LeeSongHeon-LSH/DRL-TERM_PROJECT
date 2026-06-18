@@ -61,8 +61,28 @@ class VLLMRollout:
 
     @staticmethod
     def _build_prompt(problem: str) -> str:
+        system = (
+            "You solve math problems using natural-language steps only.\n"
+            "Rules:\n"
+            '- Output exactly one reasoning step per line.\n'
+            '- Start every line with "Step k:" (k = 1,2,3,...).\n'
+            '- Each line must contain a SINGLE calculation or deduction. '
+            "Never put two on one line.\n"
+            '- Do NOT write any code or use Python.\n'
+            '- Do NOT write an introduction or a summary sentence.\n'
+            '- The last line must be "Answer: <number>".'
+        )
+        few_shot_user = "A box has 2 dozen pens. 5 are given away. How many remain?"
+        few_shot_assistant = (
+            "Step 1: One dozen is 12, so 2 dozen is 2 × 12 = 24 pens.\n"
+            "Step 2: 5 pens are given away.\n"
+            "Step 3: Remaining pens = 24 − 5 = 19.\n"
+            "Answer: 19"
+        )
         return (
-            "<|im_start|>system\nYou solve math step by step. Number each step on its own line.<|im_end|>\n"
+            f"<|im_start|>system\n{system}\n<|im_end|>\n"
+            f"<|im_start|>user\n{few_shot_user}\n<|im_end|>\n"
+            f"<|im_start|>assistant\n{few_shot_assistant}\n<|im_end|>\n"
             f"<|im_start|>user\n{problem}<|im_end|>\n"
             "<|im_start|>assistant\n"
         )
