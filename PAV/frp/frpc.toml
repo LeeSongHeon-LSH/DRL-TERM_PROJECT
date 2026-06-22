@@ -3,7 +3,7 @@
 # 환경변수 (docker-compose 가 env 로 inject):
 #   FRPS_ADDR    — 학습 PC 의 공인 IP 또는 DDNS hostname (예: myhost.duckdns.org)
 #   FRPS_TOKEN   — frps 와 일치하는 인증 토큰
-#   NODE_NAME    — 이 추론 PC 의 고유 라벨 (예: 5070-pc-01) — proxy name 충돌 방지
+#   NODE_NAME    — 이 추론 인스턴스의 고유 라벨 (예: t4-pc-01) — proxy name 충돌 방지
 
 serverAddr = "{{ .Envs.FRPS_ADDR }}"
 serverPort = 7000

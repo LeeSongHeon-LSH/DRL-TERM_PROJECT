@@ -44,18 +44,21 @@ flowchart LR
 - **추론 서버 풀 ×N** — 클라우드 **T4 (16GB)** 인스턴스: μ vLLM(:8001) + PRM FastAPI(:8002)
 - **로드밸런서** — HTTP/JSON routing · round-robin · health-check (weight broadcast 0, step당 RPC ~6MB)
 
-## 결과 요약 (AIME 89문항, checkpoint-500)
+## 결과 요약 — Q1(스칼라) vs Q3(분포), AIME 89문항 · checkpoint-500
 
-| 지표 | 분포 C3 +few-shot | 분포 C3 | 스칼라 C2 | Baseline |
+> **핵심 비교**: 분포(Q3)를 넣으면 스칼라(Q1) 대비 성능·다양성이 좋아지는가? — 두 run(`PAV-scalar-c2-test` vs `PAV-distribution-fewshot-test`)은 **reducer만 다름**.
+
+| 지표 | **Q3 분포 (few-shot)** | **Q1 스칼라 (C2)** | Baseline | Q3 zero-shot\* |
 |---|---|---|---|---|
-| Pass@1 | 0.083 | 0.084 | 0.088 | 0.084 |
-| **Pass@256** | **0.405** | 0.348 | 0.348 | 0.337 |
-| 평균 distinct 답 | **34.9** | 30.4 | 30.7 | 31.0 |
-| 정규화 엔트로피 | **0.471** | 0.435 | 0.433 | 0.434 |
+| Pass@1 | 0.083 | 0.088 | 0.084 | 0.084 |
+| **Pass@256** | **0.405** | 0.348 | 0.337 | 0.348 |
+| 평균 distinct 답 | **34.9** | 30.7 | 31.0 | 30.4 |
+| 정규화 엔트로피 | **0.471** | 0.433 | 0.434 | 0.435 |
 
-- **분포형(few-shot Q3)이 pass@256·다양성(distinct·엔트로피)에서 우위** → H1 지지.
-- 학습 동역학: **분포(C3)는 reward_std를 끝까지 유지**(탐색 다양성 보존), **스칼라(C2)는 후반 붕괴**.
-- 3-run 학습변화량 비교 → [PAV/outputs/comparison/training_comparison.md](PAV/outputs/comparison/training_comparison.md)
+- **분포(Q3)가 스칼라(Q1) 대비 pass@256(0.405 vs 0.348)·다양성(distinct 34.9 vs 30.7, 엔트로피 0.471 vs 0.433)에서 우위** → H1 지지.
+- 학습 동역학: **Q3(분포)는 reward_std를 끝까지 유지**(탐색 다양성 보존), **Q1(스칼라)는 후반 붕괴**.
+- \*Q3 zero-shot(`PAV-distribution-test`)은 KL≈0 **동결**된 초기 시도 — few-shot으로 해결(분포형이 학습되게 만든 전제).
+- Q1 vs Q3 학습변화량 비교 → [PAV/outputs/comparison/training_comparison.md](PAV/outputs/comparison/training_comparison.md)
 
 > 셋 다 5000 step 계획 중 **~500 step(epoch≈0.54)** 초기 스냅샷 — 절대 성능보다 **조건 간 차이**에 주목.
 
